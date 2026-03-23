@@ -114,7 +114,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.registerHotkeys()
+            MainActor.assumeIsolated { [weak self] in
+                self?.registerHotkeys()
+            }
         }
 
         // Suppress/resume hotkeys during hotkey recording
@@ -123,14 +125,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.hotkeyManager.isSuppressed = true
+            MainActor.assumeIsolated { [weak self] in
+                self?.hotkeyManager.isSuppressed = true
+            }
         }
         NotificationCenter.default.addObserver(
             forName: .hotkeyRecordingDidEnd,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.hotkeyManager.isSuppressed = false
+            MainActor.assumeIsolated { [weak self] in
+                self?.hotkeyManager.isSuppressed = false
+            }
         }
 
         DispatchQueue.main.async { [weak self] in
@@ -141,43 +147,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Show setup wizard on first launch
         if !appState.hasCompletedSetup {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                if let app = NSApp {
-                    app.sendAction(Selector(("showSetupWindow:")), to: nil, from: nil)
+                MainActor.assumeIsolated {
+                    _ = NSApp.sendAction(Selector(("showSetupWindow:")), to: nil, from: nil)
                 }
             }
         }
 
         // Dynamic activation policy: show dock icon when windows are open
         NotificationCenter.default.addObserver(
-            forName: NSWindow.didBecomeKeyNotification,
-            object: nil,
-            queue: .main
-        ) { notification in
-            guard let window = notification.object as? NSWindow,
-                  window.identifier?.rawValue == "settings" ||
-                  window.identifier?.rawValue == "setup" ||
-                  window.title.contains("Type4Me") else { return }
-            NSApp.setActivationPolicy(.regular)
-        }
+            self,
+            selector: #selector(handleManagedWindowDidBecomeKey(_:)),
+            name: NSWindow.didBecomeKeyNotification,
+            object: nil
+        )
 
         NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            // Delay check: after close, see if any managed windows remain visible
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                let hasVisibleWindow = NSApp.windows.contains {
-                    $0.isVisible && !$0.className.contains("StatusBar") && !$0.className.contains("Panel")
-                    && $0.level == .normal
-                }
-                if !hasVisibleWindow {
-                    NSApp.setActivationPolicy(.accessory)
-                    // Resign active so menu bar or previous app gets focus
-                    NSApp.hide(self)
-                }
-            }
-        }
+            self,
+            selector: #selector(handleManagedWindowWillClose(_:)),
+            name: NSWindow.willCloseNotification,
+            object: nil
+        )
     }
 
     private func registerHotkeys() {
@@ -245,16 +234,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Prompt for accessibility and poll until granted
         PermissionManager.promptAccessibilityPermission()
         retryTimer?.invalidate()
-        retryTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
-            guard let self else { timer.invalidate(); return }
-            if PermissionManager.hasAccessibilityPermission {
-                let ok = self.hotkeyManager.start()
-                NSLog("[Type4Me] Hotkey retry: %@", ok ? "OK" : "still failing")
-                if ok {
-                    timer.invalidate()
-                    self.retryTimer = nil
-                }
+        retryTimer = Timer.scheduledTimer(
+            timeInterval: 2.0,
+            target: self,
+            selector: #selector(handleHotkeyRetry(_:)),
+            userInfo: nil,
+            repeats: true
+        )
+    }
+
+    @objc
+    private func handleHotkeyRetry(_ timer: Timer) {
+        if PermissionManager.hasAccessibilityPermission {
+            let ok = hotkeyManager.start()
+            NSLog("[Type4Me] Hotkey retry: %@", ok ? "OK" : "still failing")
+            if ok {
+                timer.invalidate()
+                retryTimer = nil
             }
+        }
+    }
+
+    @objc
+    private func handleManagedWindowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window.identifier?.rawValue == "settings" ||
+              window.identifier?.rawValue == "setup" ||
+              window.title.contains("Type4Me") else { return }
+        NSApp.setActivationPolicy(.regular)
+    }
+
+    @objc
+    private func handleManagedWindowWillClose(_ notification: Notification) {
+        Timer.scheduledTimer(
+            timeInterval: 0.3,
+            target: self,
+            selector: #selector(updateActivationPolicyAfterWindowClose(_:)),
+            userInfo: nil,
+            repeats: false
+        )
+    }
+
+    @objc
+    private func updateActivationPolicyAfterWindowClose(_ timer: Timer) {
+        let hasVisibleWindow = NSApp.windows.contains {
+            $0.isVisible && !$0.className.contains("StatusBar") && !$0.className.contains("Panel")
+            && $0.level == .normal
+        }
+        if !hasVisibleWindow {
+            NSApp.setActivationPolicy(.accessory)
+            // Resign active so menu bar or previous app gets focus
+            NSApp.hide(nil)
         }
     }
 

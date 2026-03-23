@@ -13,6 +13,7 @@ enum SettingsTestStatus: Equatable {
 
 fileprivate protocol SettingsCardHelpers {}
 
+@MainActor
 extension SettingsCardHelpers {
 
     func settingsGroupCard<Content: View>(

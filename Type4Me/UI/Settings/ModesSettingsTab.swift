@@ -533,7 +533,7 @@ private struct HotkeyRecordingSheet: View {
     @State private var isListening = true
     @State private var eventMonitor: Any?
     @State private var pendingModifierCode: Int?
-    @State private var modifierTimer: Timer?
+    @State private var modifierCaptureTask: Task<Void, Never>?
 
     init(
         target: RecordingTarget,
@@ -695,20 +695,19 @@ private struct HotkeyRecordingSheet: View {
 
                 if pressed {
                     pendingModifierCode = kc
-                    modifierTimer?.invalidate()
-                    modifierTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { _ in
-                        if let pending = pendingModifierCode {
-                            capturedKeyCode = pending
-                            capturedModifiers = 0
-                            pendingModifierCode = nil
-                            isListening = false
-                            removeMonitor()
+                    modifierCaptureTask?.cancel()
+                    modifierCaptureTask = Task {
+                        try? await Task.sleep(for: .milliseconds(400))
+                        guard !Task.isCancelled else { return }
+                        await MainActor.run {
+                            guard let pending = pendingModifierCode else { return }
+                            captureModifierOnlyHotkey(pending)
                         }
                     }
                 } else {
                     if let pending = pendingModifierCode {
-                        modifierTimer?.invalidate()
-                        modifierTimer = nil
+                        modifierCaptureTask?.cancel()
+                        modifierCaptureTask = nil
                         capturedKeyCode = pending
                         capturedModifiers = 0
                         pendingModifierCode = nil
@@ -721,8 +720,8 @@ private struct HotkeyRecordingSheet: View {
 
             if event.type == .keyDown {
                 let kc = Int(event.keyCode)
-                modifierTimer?.invalidate()
-                modifierTimer = nil
+                modifierCaptureTask?.cancel()
+                modifierCaptureTask = nil
                 pendingModifierCode = nil
 
                 if kc == 53 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function]).isEmpty {
@@ -743,6 +742,15 @@ private struct HotkeyRecordingSheet: View {
         }
     }
 
+    @MainActor
+    private func captureModifierOnlyHotkey(_ keyCode: Int) {
+        capturedKeyCode = keyCode
+        capturedModifiers = 0
+        pendingModifierCode = nil
+        isListening = false
+        removeMonitor()
+    }
+
     private func removeMonitor() {
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
@@ -751,8 +759,8 @@ private struct HotkeyRecordingSheet: View {
     }
 
     private func cleanup() {
-        modifierTimer?.invalidate()
-        modifierTimer = nil
+        modifierCaptureTask?.cancel()
+        modifierCaptureTask = nil
         pendingModifierCode = nil
         removeMonitor()
     }

@@ -7,11 +7,11 @@ struct ModeBinding {
     let keyCode: CGKeyCode
     let modifiers: CGEventFlags  // .maskCommand etc. Use [] for no modifiers
     let style: HotkeyStyle
-    let onStart: () -> Void
-    let onStop: () -> Void
+    let onStart: @Sendable () -> Void
+    let onStop: @Sendable () -> Void
 }
 
-final class HotkeyManager {
+final class HotkeyManager: NSObject {
 
     // MARK: - Configuration
 
@@ -222,17 +222,29 @@ final class HotkeyManager {
     private func startSafetyTimer(for binding: ModeBinding) {
         cancelSafetyTimer(for: binding.modeId)
         let id = binding.modeId
-        holdSafetyTimers[id] = Timer.scheduledTimer(withTimeInterval: maxHoldDuration, repeats: false) { [weak self] _ in
-            guard let self, self.holdState[id] == true else { return }
-            NSLog("[HotkeyManager] Safety timer fired for mode %@, auto-stopping", id.uuidString)
-            self.holdState[id] = false
-            binding.onStop()
-        }
+        holdSafetyTimers[id] = Timer.scheduledTimer(
+            timeInterval: maxHoldDuration,
+            target: self,
+            selector: #selector(handleHoldSafetyTimer(_:)),
+            userInfo: id,
+            repeats: false
+        )
     }
 
     private func cancelSafetyTimer(for id: UUID) {
         holdSafetyTimers[id]?.invalidate()
         holdSafetyTimers[id] = nil
+    }
+
+    @objc
+    private func handleHoldSafetyTimer(_ timer: Timer) {
+        guard let id = timer.userInfo as? UUID else { return }
+        guard holdState[id] == true else { return }
+        guard let binding = bindings.first(where: { $0.modeId == id }) else { return }
+
+        NSLog("[HotkeyManager] Safety timer fired for mode %@, auto-stopping", id.uuidString)
+        holdState[id] = false
+        binding.onStop()
     }
 
     // MARK: - Stuck Hold Recovery

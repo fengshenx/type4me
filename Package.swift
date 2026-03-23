@@ -7,7 +7,8 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Type4Me",
-            path: "Type4Me"
+            path: "Type4Me",
+            exclude: ["Resources"]
         ),
         .testTarget(
             name: "Type4MeTests",

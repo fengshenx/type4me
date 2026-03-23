@@ -9,7 +9,7 @@ struct HotkeyRecorderView: View {
     @State private var isRecording = false
     @State private var eventMonitor: Any?
     @State private var pendingModifierCode: Int?
-    @State private var modifierTimer: Timer?
+    @State private var modifierCaptureTask: Task<Void, Never>?
 
     var body: some View {
         HStack(spacing: 6) {
@@ -71,8 +71,8 @@ struct HotkeyRecorderView: View {
     private func startRecording() {
         isRecording = true
         pendingModifierCode = nil
-        modifierTimer?.invalidate()
-        modifierTimer = nil
+        modifierCaptureTask?.cancel()
+        modifierCaptureTask = nil
 
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { event in
             if event.type == .flagsChanged {
@@ -83,20 +83,20 @@ struct HotkeyRecorderView: View {
                 if pressed {
                     // Modifier pressed: don't capture yet, wait for possible combo key
                     pendingModifierCode = kc
-                    modifierTimer?.invalidate()
-                    modifierTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { _ in
-                        // No regular key followed: capture as modifier-only
-                        if let pending = pendingModifierCode {
-                            keyCode = pending
-                            modifiers = 0
-                            stopRecording()
+                    modifierCaptureTask?.cancel()
+                    modifierCaptureTask = Task {
+                        try? await Task.sleep(for: .milliseconds(400))
+                        guard !Task.isCancelled else { return }
+                        await MainActor.run {
+                            guard let pending = pendingModifierCode else { return }
+                            captureModifierOnlyKey(pending)
                         }
                     }
                 } else {
                     // Modifier released without any keyDown: capture as modifier-only
                     if let pending = pendingModifierCode {
-                        modifierTimer?.invalidate()
-                        modifierTimer = nil
+                        modifierCaptureTask?.cancel()
+                        modifierCaptureTask = nil
                         keyCode = pending
                         modifiers = 0
                         pendingModifierCode = nil
@@ -109,8 +109,8 @@ struct HotkeyRecorderView: View {
             if event.type == .keyDown {
                 let kc = Int(event.keyCode)
                 // Cancel any pending modifier-only capture
-                modifierTimer?.invalidate()
-                modifierTimer = nil
+                modifierCaptureTask?.cancel()
+                modifierCaptureTask = nil
                 pendingModifierCode = nil
 
                 // Escape cancels
@@ -130,10 +130,17 @@ struct HotkeyRecorderView: View {
         }
     }
 
+    @MainActor
+    private func captureModifierOnlyKey(_ keyCode: Int) {
+        self.keyCode = keyCode
+        modifiers = 0
+        stopRecording()
+    }
+
     private func stopRecording() {
         isRecording = false
-        modifierTimer?.invalidate()
-        modifierTimer = nil
+        modifierCaptureTask?.cancel()
+        modifierCaptureTask = nil
         pendingModifierCode = nil
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
