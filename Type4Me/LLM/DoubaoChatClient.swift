@@ -58,8 +58,14 @@ actor DoubaoChatClient: LLMClient {
 
         // Parse SSE stream
         var result = ""
+        var lineCount = 0
+        var firstNonSSELine: String?
         for try await line in bytes.lines {
-            guard line.hasPrefix("data: ") else { continue }
+            lineCount += 1
+            guard line.hasPrefix("data: ") else {
+                if firstNonSSELine == nil && !line.isEmpty { firstNonSSELine = String(line.prefix(200)) }
+                continue
+            }
             let payload = String(line.dropFirst(6))
             if payload == "[DONE]" { break }
             guard let data = payload.data(using: .utf8),
@@ -69,6 +75,9 @@ actor DoubaoChatClient: LLMClient {
             result += content
         }
 
+        if result.isEmpty && lineCount > 0 {
+            logger.warning("LLM returned \(lineCount) lines but 0 content chars, first non-SSE line: \(firstNonSSELine ?? "(none)")")
+        }
         logger.info("LLM result: \(result.count) chars")
 
         return result.strippingThinkTags()

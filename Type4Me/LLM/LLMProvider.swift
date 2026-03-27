@@ -34,7 +34,7 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable {
     var defaultBaseURL: String {
         switch self {
         case .doubao:      return "https://ark.cn-beijing.volces.com/api/v3"
-        case .minimaxCN:   return "https://api.minimax.chat/v1"
+        case .minimaxCN:   return "https://api.minimaxi.com/v1"
         case .minimaxIntl: return "https://api.minimax.io/v1"
         case .bailian:     return "https://dashscope.aliyuncs.com/compatible-mode/v1"
         case .kimi:        return "https://api.moonshot.ai/v1"

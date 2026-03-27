@@ -488,13 +488,13 @@ actor RecognitionSession {
             if let earlyTask = earlyLLMTask {
                 state = .postProcessing
                 DebugFileLogger.log("stop: awaiting early LLM result +\(ContinuousClock.now - stopT0)")
-                if let result = await earlyTask.value {
+                if let result = await earlyTask.value, !result.isEmpty {
                     DebugFileLogger.log("stop: early LLM result received \(result.count) chars +\(ContinuousClock.now - stopT0)")
                     processedText = result
                     finalText = result
                     onASREvent?(.processingResult(text: result))
                 } else {
-                    DebugFileLogger.log("stop: early LLM returned nil, using raw +\(ContinuousClock.now - stopT0)")
+                    DebugFileLogger.log("stop: early LLM returned nil/empty, using raw +\(ContinuousClock.now - stopT0)")
                     onASREvent?(.processingResult(text: rawText))
                 }
             } else if needsLLM {
@@ -505,9 +505,14 @@ actor RecognitionSession {
                         let result = try await client.process(
                             text: finalText, prompt: promptContext.expandContextVariables(currentMode.prompt), config: llmConfig
                         )
-                        processedText = result
-                        finalText = result
-                        onASREvent?(.processingResult(text: result))
+                        if result.isEmpty {
+                            logger.warning("LLM returned empty, using raw text")
+                            onASREvent?(.processingResult(text: rawText))
+                        } else {
+                            processedText = result
+                            finalText = result
+                            onASREvent?(.processingResult(text: result))
+                        }
                     } catch {
                         logger.error("LLM failed: \(error), using raw text")
                         onASREvent?(.processingResult(text: rawText))

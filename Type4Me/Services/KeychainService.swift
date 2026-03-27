@@ -235,6 +235,19 @@ enum KeychainService {
             NSLog("[KeychainService] Migrated flat LLM keys to tf_llm_doubao")
         }
 
+        // Migrate MiniMax CN: api.minimax.chat → api.minimaxi.com (old domain was incorrect)
+        let minimaxCNKey = llmStorageKey(for: .minimaxCN)
+        if var minimaxCreds = mutableDict[minimaxCNKey] as? [String: String],
+           let baseURL = minimaxCreds["baseURL"],
+           baseURL.contains("api.minimax.chat") {
+            minimaxCreds["baseURL"] = baseURL.replacingOccurrences(
+                of: "api.minimax.chat", with: "api.minimaxi.com"
+            )
+            mutableDict[minimaxCNKey] = minimaxCreds
+            migrated = true
+            NSLog("[KeychainService] Migrated MiniMax CN base URL: api.minimax.chat → api.minimaxi.com")
+        }
+
         if migrated {
             try? saveAll(mutableDict)
         }
