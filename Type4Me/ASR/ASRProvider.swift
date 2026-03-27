@@ -45,6 +45,11 @@ enum ASRProvider: String, CaseIterable, Codable, Sendable {
 
 // MARK: - Credential Field Descriptor
 
+struct FieldOption: Sendable {
+    let value: String
+    let label: String
+}
+
 struct CredentialField: Sendable, Identifiable {
     let key: String
     let label: String
@@ -52,8 +57,20 @@ struct CredentialField: Sendable, Identifiable {
     let isSecure: Bool
     let isOptional: Bool
     let defaultValue: String
+    /// When non-empty, the UI renders a Picker instead of a TextField.
+    let options: [FieldOption]
 
     var id: String { key }
+
+    init(key: String, label: String, placeholder: String, isSecure: Bool, isOptional: Bool, defaultValue: String, options: [FieldOption] = []) {
+        self.key = key
+        self.label = label
+        self.placeholder = placeholder
+        self.isSecure = isSecure
+        self.isOptional = isOptional
+        self.defaultValue = defaultValue
+        self.options = options
+    }
 }
 
 // MARK: - Provider Config Protocol

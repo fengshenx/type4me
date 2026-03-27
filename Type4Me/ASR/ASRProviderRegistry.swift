@@ -4,11 +4,15 @@ struct ASRProviderCapabilities: Sendable, Equatable {
     let supportsQuickMode: Bool
     let supportsPerformanceMode: Bool
     let performanceModeReason: String?
+    /// False for batch/REST providers that only produce results in endAudio().
+    /// When false, RecognitionSession must await endAudio() completion before reading text.
+    let isStreaming: Bool
 
     static let full = ASRProviderCapabilities(
         supportsQuickMode: true,
         supportsPerformanceMode: true,
-        performanceModeReason: nil
+        performanceModeReason: nil,
+        isStreaming: true
     )
 
     static let quickOnly = ASRProviderCapabilities(
@@ -17,7 +21,18 @@ struct ASRProviderCapabilities: Sendable, Equatable {
         performanceModeReason: L(
             "当前引擎仅支持实时识别，不支持整段识别。",
             "This engine only supports real-time recognition, not full-audio recognition."
-        )
+        ),
+        isStreaming: true
+    )
+
+    static let batchOnly = ASRProviderCapabilities(
+        supportsQuickMode: true,
+        supportsPerformanceMode: false,
+        performanceModeReason: L(
+            "当前引擎仅支持整段识别，不支持实时识别。",
+            "This engine only supports full-audio recognition, not real-time recognition."
+        ),
+        isStreaming: false
     )
 
     static let unavailable = ASRProviderCapabilities(
@@ -26,7 +41,8 @@ struct ASRProviderCapabilities: Sendable, Equatable {
         performanceModeReason: L(
             "当前引擎尚未提供可用的语音识别实现。",
             "This engine does not currently provide an available speech recognition implementation."
-        )
+        ),
+        isStreaming: true
     )
 }
 
@@ -84,7 +100,11 @@ enum ASRProviderRegistry {
                 createClient: { BailianASRClient() },
                 capabilities: .quickOnly
             ),
-            .openai:  ProviderEntry(configType: OpenAIASRConfig.self,  createClient: nil),
+            .openai:  ProviderEntry(
+                configType: OpenAIASRConfig.self,
+                createClient: { OpenAIASRClient() },
+                capabilities: .batchOnly
+            ),
             .azure:   ProviderEntry(configType: AzureASRConfig.self,   createClient: nil),
             .google:  ProviderEntry(configType: GoogleASRConfig.self,  createClient: nil),
             .aws:     ProviderEntry(configType: AWSASRConfig.self,     createClient: nil),

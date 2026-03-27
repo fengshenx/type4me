@@ -42,16 +42,26 @@ extension SettingsCardHelpers {
                 .font(.system(size: 13))
                 .foregroundStyle(TF.settingsText)
                 .frame(width: 100, alignment: .leading)
-            TextField(prompt, text: text)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 6).fill(TF.settingsBg))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(TF.settingsTextTertiary.opacity(0.2), lineWidth: 1)
-                )
+            FixedWidthTextField(text: text, placeholder: prompt)
+                .frame(height: 34)
+        }
+        .frame(minHeight: 40)
+        .padding(.vertical, 6)
+    }
+
+    func settingsPickerField(_ label: String, selection: Binding<String>, options: [FieldOption]) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 13))
+                .foregroundStyle(TF.settingsText)
+                .frame(width: 100, alignment: .leading)
+            Picker("", selection: selection) {
+                ForEach(options, id: \.value) { option in
+                    Text(option.label).tag(option.value)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(minHeight: 40)
         .padding(.vertical, 6)
@@ -63,16 +73,8 @@ extension SettingsCardHelpers {
                 .font(.system(size: 13))
                 .foregroundStyle(TF.settingsText)
                 .frame(width: 100, alignment: .leading)
-            SecureField(prompt, text: text)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 6).fill(TF.settingsBg))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(TF.settingsTextTertiary.opacity(0.2), lineWidth: 1)
-                )
+            FixedWidthSecureField(text: text, placeholder: prompt)
+                .frame(height: 34)
         }
         .frame(minHeight: 40)
         .padding(.vertical, 6)
@@ -328,6 +330,7 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
         }
     }
 
+    @ViewBuilder
     private func credentialFieldRow(_ field: CredentialField) -> some View {
         let binding = Binding<String>(
             get: { asrCredentialValues[field.key] ?? "" },
@@ -336,9 +339,23 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
                 editedFields.insert(field.key)
             }
         )
-        let savedVal = savedASRValues[field.key] ?? ""
-        let placeholder = savedVal.isEmpty ? field.placeholder : maskedSecret(savedVal)
-        return settingsField(field.label, text: binding, prompt: placeholder)
+        if !field.options.isEmpty {
+            let pickerBinding = Binding<String>(
+                get: {
+                    let val = asrCredentialValues[field.key] ?? ""
+                    return val.isEmpty ? (savedASRValues[field.key] ?? field.defaultValue) : val
+                },
+                set: {
+                    asrCredentialValues[field.key] = $0
+                    editedFields.insert(field.key)
+                }
+            )
+            settingsPickerField(field.label, selection: pickerBinding, options: field.options)
+        } else {
+            let savedVal = savedASRValues[field.key] ?? ""
+            let placeholder = savedVal.isEmpty ? field.placeholder : maskedSecret(savedVal)
+            settingsField(field.label, text: binding, prompt: placeholder)
+        }
     }
 
     private var asrSummaryRows: [(String, String)] {
@@ -792,6 +809,7 @@ struct LLMSettingsCard: View, SettingsCardHelpers {
         }
     }
 
+    @ViewBuilder
     private func credentialFieldRow(_ field: CredentialField) -> some View {
         let binding = Binding<String>(
             get: { llmCredentialValues[field.key] ?? "" },
@@ -800,12 +818,26 @@ struct LLMSettingsCard: View, SettingsCardHelpers {
                 editedFields.insert(field.key)
             }
         )
-        let savedVal = savedLLMValues[field.key] ?? ""
-        let placeholder = savedVal.isEmpty ? field.placeholder : maskedSecret(savedVal)
-        if field.isSecure {
-            return AnyView(settingsSecureField(field.label, text: binding, prompt: placeholder))
+        if !field.options.isEmpty {
+            let pickerBinding = Binding<String>(
+                get: {
+                    let val = llmCredentialValues[field.key] ?? ""
+                    return val.isEmpty ? (savedLLMValues[field.key] ?? field.defaultValue) : val
+                },
+                set: {
+                    llmCredentialValues[field.key] = $0
+                    editedFields.insert(field.key)
+                }
+            )
+            settingsPickerField(field.label, selection: pickerBinding, options: field.options)
         } else {
-            return AnyView(settingsField(field.label, text: binding, prompt: placeholder))
+            let savedVal = savedLLMValues[field.key] ?? ""
+            let placeholder = savedVal.isEmpty ? field.placeholder : maskedSecret(savedVal)
+            if field.isSecure {
+                settingsSecureField(field.label, text: binding, prompt: placeholder)
+            } else {
+                settingsField(field.label, text: binding, prompt: placeholder)
+            }
         }
     }
 
@@ -1134,7 +1166,7 @@ struct GeneralSettingsTab: View, SettingsCardHelpers {
             Image(systemName: icon)
                 .font(.system(size: 24))
                 .foregroundStyle(granted ? TF.settingsAccentGreen : TF.settingsTextTertiary)
-                .frame(height: 28)
+                .frame(height: 34)
 
             Text(name)
                 .font(.system(size: 13, weight: .medium))

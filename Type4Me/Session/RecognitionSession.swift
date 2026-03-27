@@ -344,11 +344,14 @@ actor RecognitionSession {
 
         // For LLM modes: reuse speculative LLM if text matches,
         // otherwise fire fresh LLM immediately.
+        // Batch (non-streaming) providers skip early LLM — no real text available yet.
         cancelSpeculativeLLM()
         let isPerformanceMode = currentMode.id == ProcessingMode.performanceId
         let needsLLM = !currentMode.prompt.isEmpty && !isPerformanceMode
+        let provider = KeychainService.selectedASRProvider
+        let canEarlyLLM = ASRProviderRegistry.capabilities(for: provider).isStreaming
         var earlyLLMTask: Task<String?, Never>?
-        if needsLLM {
+        if needsLLM && canEarlyLLM {
             var earlyText = currentTranscript.composedText
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             earlyText = SnippetStorage.apply(to: earlyText)
@@ -387,7 +390,6 @@ actor RecognitionSession {
         // Provider-agnostic: uses registry's offlineRecognize if the provider supports it.
         activeFlashTask?.cancel()
         activeFlashTask = nil
-        let provider = KeychainService.selectedASRProvider
         if isPerformanceMode,
            let entry = ASRProviderRegistry.entry(for: provider),
            entry.supportsDualChannel,
@@ -410,21 +412,24 @@ actor RecognitionSession {
             }
         }
 
-        // ASR teardown: LLM modes skip endAudio/drain since we already
-        // captured the streaming text and don't need server's final refinement.
+        // ASR teardown: streaming providers can skip endAudio in LLM modes since
+        // we already have text. Batch providers (e.g. OpenAI REST) MUST await endAudio
+        // because that's where the actual recognition happens.
+        let providerIsStreaming = ASRProviderRegistry.capabilities(for: provider).isStreaming
         if let client = asrClient {
-            if needsLLM && earlyLLMTask != nil {
-                // Fast path: just disconnect, skip the 2-3s finalization.
+            if needsLLM && earlyLLMTask != nil && providerIsStreaming {
+                // Fast path (streaming only): just disconnect, skip the 2-3s finalization.
                 eventConsumptionTask?.cancel()
                 await client.disconnect()
                 DebugFileLogger.log("stop: ASR fast-disconnect +\(ContinuousClock.now - stopT0)")
             } else {
-                // Full teardown for direct/dual-channel modes.
+                // Full teardown: batch providers get a longer timeout for the HTTP round-trip.
+                let endAudioTimeout: Duration = providerIsStreaming ? .seconds(3) : .seconds(60)
                 do {
                     try await withThrowingTaskGroup(of: Void.self) { group in
                         group.addTask { try await client.endAudio() }
                         group.addTask {
-                            try await Task.sleep(for: .seconds(3))
+                            try await Task.sleep(for: endAudioTimeout)
                             throw CancellationError()
                         }
                         try await group.next()
@@ -434,6 +439,7 @@ actor RecognitionSession {
                     NSLog("[Session] endAudio timed out or failed: %@", String(describing: error))
                     DebugFileLogger.log("endAudio timeout/error: \(error)")
                 }
+                let drainTimeout: Duration = providerIsStreaming ? .seconds(2) : .seconds(5)
                 if let task = eventConsumptionTask {
                     let streamDrained = await withTaskGroup(of: Bool.self) { group in
                         group.addTask {
@@ -441,7 +447,7 @@ actor RecognitionSession {
                             return true
                         }
                         group.addTask {
-                            try? await Task.sleep(for: .seconds(2))
+                            try? await Task.sleep(for: drainTimeout)
                             return false
                         }
                         let first = await group.next() ?? true

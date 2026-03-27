@@ -25,14 +25,6 @@ struct BailianASRConfig: ASRProviderConfig, Sendable {
             defaultValue: defaultModel
         ),
         CredentialField(
-            key: "deviceId",
-            label: "Device ID",
-            placeholder: L("客户端唯一标识", "Stable client identifier"),
-            isSecure: false,
-            isOptional: true,
-            defaultValue: ASRIdentityStore.loadOrCreateUID()
-        ),
-        CredentialField(
             key: "languageHint",
             label: "Language Hint",
             placeholder: "zh / en / ja",
@@ -52,7 +44,6 @@ struct BailianASRConfig: ASRProviderConfig, Sendable {
 
     let apiKey: String
     let model: String
-    let deviceId: String
     let languageHint: String
     let vocabularyId: String
 
@@ -63,7 +54,6 @@ struct BailianASRConfig: ASRProviderConfig, Sendable {
 
         self.apiKey = apiKey
         self.model = Self.sanitized(credentials["model"]) ?? Self.defaultModel
-        self.deviceId = Self.sanitized(credentials["deviceId"]) ?? ASRIdentityStore.loadOrCreateUID()
 
         let rawLanguageHint = Self.sanitized(credentials["languageHint"])?.lowercased() ?? ""
         self.languageHint = Self.supportedLanguageHints.contains(rawLanguageHint) ? rawLanguageHint : ""
@@ -74,14 +64,13 @@ struct BailianASRConfig: ASRProviderConfig, Sendable {
         [
             "apiKey": apiKey,
             "model": model,
-            "deviceId": deviceId,
             "languageHint": languageHint,
             "vocabularyId": vocabularyId,
         ]
     }
 
     var isValid: Bool {
-        !apiKey.isEmpty && !model.isEmpty && !deviceId.isEmpty
+        !apiKey.isEmpty && !model.isEmpty
     }
 
     private static func sanitized(_ value: String?) -> String? {

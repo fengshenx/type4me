@@ -212,7 +212,16 @@ struct SetupWizardView: View {
 
                 // Dynamic credential fields
                 ForEach(currentFields) { field in
-                    if field.isSecure {
+                    if !field.options.isEmpty {
+                        Picker(field.label, selection: Binding(
+                            get: { credentialValues[field.key] ?? field.defaultValue },
+                            set: { credentialValues[field.key] = $0 }
+                        )) {
+                            ForEach(field.options, id: \.value) { option in
+                                Text(option.label).tag(option.value)
+                            }
+                        }
+                    } else if field.isSecure {
                         SecureField(field.label, text: Binding(
                             get: { credentialValues[field.key] ?? "" },
                             set: { credentialValues[field.key] = $0 }

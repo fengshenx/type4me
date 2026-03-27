@@ -6,7 +6,7 @@ struct VolcanoASRConfig: ASRProviderConfig, Sendable {
     static var displayName: String { L("火山引擎 (Doubao)", "Volcano (Doubao)") }
 
     static var credentialFields: [CredentialField] {[
-        CredentialField(key: "appKey", label: "App Key", placeholder: "APPID", isSecure: false, isOptional: false, defaultValue: ""),
+        CredentialField(key: "appKey", label: "App ID", placeholder: "APPID", isSecure: false, isOptional: false, defaultValue: ""),
         CredentialField(key: "accessKey", label: "Access Token", placeholder: L("访问令牌", "Access token"), isSecure: true, isOptional: false, defaultValue: ""),
     ]}
 
