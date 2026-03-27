@@ -10,20 +10,20 @@ private enum SettingsFieldStyle {
     static let borderColor = NSColor(red: 0.42, green: 0.42, blue: 0.42, alpha: 0.2)
     static let padding = NSSize(width: 8, height: 0)
 
-    static func applyCommon(to field: NSTextField, placeholder: String) {
+    static func applyCommon(to field: NSTextField, placeholder: String, drawsContainer: Bool) {
         field.font = .systemFont(ofSize: 12)
         field.isBordered = false
         field.isBezeled = false
-        field.drawsBackground = true
-        field.backgroundColor = bgColor
+        field.drawsBackground = drawsContainer
+        field.backgroundColor = drawsContainer ? bgColor : .clear
         field.textColor = textColor
         field.focusRingType = .none
         field.usesSingleLineMode = true
         field.maximumNumberOfLines = 1
         field.wantsLayer = true
-        field.layer?.cornerRadius = 6
-        field.layer?.borderWidth = 1
-        field.layer?.borderColor = borderColor.cgColor
+        field.layer?.cornerRadius = drawsContainer ? 6 : 0
+        field.layer?.borderWidth = drawsContainer ? 1 : 0
+        field.layer?.borderColor = drawsContainer ? borderColor.cgColor : nil
 
         let style = NSMutableParagraphStyle()
         style.lineBreakMode = .byTruncatingTail
@@ -133,26 +133,51 @@ private class SettingsNSSecureTextField: NSSecureTextField {
 struct FixedWidthTextField: NSViewRepresentable {
     @Binding var text: String
     var placeholder: String
+    var commitsContinuously: Bool = true
+    var drawsContainer: Bool = true
 
     func makeNSView(context: Context) -> NSTextField {
         let field = SettingsNSTextField()
-        SettingsFieldStyle.applyCommon(to: field, placeholder: placeholder)
+        SettingsFieldStyle.applyCommon(to: field, placeholder: placeholder, drawsContainer: drawsContainer)
         field.delegate = context.coordinator
+        field.stringValue = text
         return field
     }
 
     func updateNSView(_ nsView: NSTextField, context: Context) {
+        context.coordinator.parent = self
+        guard !context.coordinator.isEditing else { return }
         if nsView.stringValue != text { nsView.stringValue = text }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
     class Coordinator: NSObject, NSTextFieldDelegate {
-        var text: Binding<String>
-        init(text: Binding<String>) { self.text = text }
+        var parent: FixedWidthTextField
+        var isEditing = false
+
+        init(parent: FixedWidthTextField) {
+            self.parent = parent
+        }
+
         func controlTextDidChange(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
-            text.wrappedValue = field.stringValue
+            isEditing = true
+            if parent.commitsContinuously {
+                parent.text = field.stringValue
+            }
+        }
+
+        func controlTextDidBeginEditing(_ obj: Notification) {
+            isEditing = true
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            isEditing = false
+            if parent.text != field.stringValue {
+                parent.text = field.stringValue
+            }
         }
     }
 }
@@ -161,10 +186,11 @@ struct FixedWidthTextField: NSViewRepresentable {
 struct FixedWidthSecureField: NSViewRepresentable {
     @Binding var text: String
     var placeholder: String
+    var drawsContainer: Bool = true
 
     func makeNSView(context: Context) -> NSSecureTextField {
         let field = SettingsNSSecureTextField()
-        SettingsFieldStyle.applyCommon(to: field, placeholder: placeholder)
+        SettingsFieldStyle.applyCommon(to: field, placeholder: placeholder, drawsContainer: drawsContainer)
         field.delegate = context.coordinator
         return field
     }

@@ -471,6 +471,7 @@ struct ModesSettingsTab: View {
                 persistModes()
             }
         }
+        .equatable()
     }
 
     // MARK: - Helpers
@@ -836,14 +837,139 @@ private struct HotkeyRecordingSheet: View {
 
 // MARK: - Mode Detail Inner
 
-private struct ModeDetailInner: View {
+private struct ModeDetailInner: View, Equatable {
 
     let mode: ProcessingMode
     let onSave: (ProcessingMode) -> Void
 
+    static func == (lhs: ModeDetailInner, rhs: ModeDetailInner) -> Bool {
+        lhs.mode == rhs.mode
+    }
+
     @State private var name = ""
     @State private var processingLabel = ""
     @State private var prompt = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Name
+            ModeFieldText(
+                label: L("名称", "Name"),
+                placeholder: L("模式名称", "Mode name"),
+                text: $name
+            )
+
+            // Processing label
+            ModeFieldText(
+                label: L("处理标签", "Processing label"),
+                placeholder: L("处理中", "Processing"),
+                text: $processingLabel,
+                hint: L("处理进行时浮窗显示的文案，如「翻译中」「修正中」", "Text shown in the floating bar during processing, e.g. \"Translating\" \"Correcting\"")
+            )
+
+            // Prompt
+            ModeFieldPrompt(
+                text: $prompt
+            )
+
+            // Save row
+            ModeDetailSaveRow(
+                mode: mode,
+                name: $name,
+                processingLabel: $processingLabel,
+                prompt: $prompt,
+                onSave: onSave
+            )
+
+            Spacer()
+        }
+        .onAppear { syncFields() }
+        .onChange(of: mode.id) { syncFields() }
+    }
+
+    private func syncFields() {
+        name = mode.name
+        processingLabel = mode.processingLabel
+        prompt = mode.prompt
+    }
+}
+
+// MARK: - Mode Field Text
+
+private struct ModeFieldText: View {
+    let label: String
+    let placeholder: String
+    @Binding var text: String
+    var hint: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(TF.settingsTextTertiary)
+            FixedWidthTextField(
+                text: $text,
+                placeholder: placeholder,
+                commitsContinuously: false,
+                drawsContainer: false
+            )
+                .frame(height: 34)
+                .background(
+                    RoundedRectangle(cornerRadius: 6).fill(TF.settingsBg)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(TF.settingsTextTertiary.opacity(0.2), lineWidth: 1)
+                )
+            if let hint {
+                Text(hint)
+                    .font(.system(size: 10))
+                    .foregroundStyle(TF.settingsTextTertiary)
+            }
+        }
+    }
+}
+
+// MARK: - Mode Field Prompt
+
+private struct ModeFieldPrompt: View {
+    @Binding var text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(L("Prompt 模板", "Prompt Template"))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(TF.settingsTextTertiary)
+            TextEditor(text: $text)
+                .font(.system(size: 11, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .frame(minHeight: 80)
+                .background(
+                    RoundedRectangle(cornerRadius: 6).fill(TF.settingsBg)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(TF.settingsTextTertiary.opacity(0.2), lineWidth: 1)
+                )
+            Text(L("变量: {text} 转写文本, {selected} 选中文本, {clipboard} 剪切板。留空则直接输出",
+                   "Variables: {text} transcribed text, {selected} selected text, {clipboard} clipboard. Leave empty for raw output."))
+                .font(.system(size: 10))
+                .foregroundStyle(TF.settingsTextTertiary)
+        }
+    }
+}
+
+// MARK: - Mode Detail Save Row
+
+private struct ModeDetailSaveRow: View {
+
+    let mode: ProcessingMode
+    @Binding var name: String
+    @Binding var processingLabel: String
+    @Binding var prompt: String
+    let onSave: (ProcessingMode) -> Void
+
     @State private var saveStatus: SaveStatus = .clean
 
     private enum SaveStatus: Equatable {
@@ -855,116 +981,41 @@ private struct ModeDetailInner: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Name
-            VStack(alignment: .leading, spacing: 4) {
-                Text(L("名称", "Name"))
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(TF.settingsTextTertiary)
-                TextField(L("模式名称", "Mode name"), text: $name)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6).fill(TF.settingsBg)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(TF.settingsTextTertiary.opacity(0.2), lineWidth: 1)
-                    )
-            }
-
-            // Processing label
-            VStack(alignment: .leading, spacing: 4) {
-                Text(L("处理标签", "Processing label"))
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(TF.settingsTextTertiary)
-                TextField(L("处理中", "Processing"), text: $processingLabel)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6).fill(TF.settingsBg)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(TF.settingsTextTertiary.opacity(0.2), lineWidth: 1)
-                    )
-                Text(L("处理进行时浮窗显示的文案，如「翻译中」「修正中」", "Text shown in the floating bar during processing, e.g. \"Translating\" \"Correcting\""))
-                    .font(.system(size: 10))
-                    .foregroundStyle(TF.settingsTextTertiary)
-            }
-
-            // Prompt
-            VStack(alignment: .leading, spacing: 4) {
-                Text(L("Prompt 模板", "Prompt Template"))
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(TF.settingsTextTertiary)
-                TextEditor(text: $prompt)
-                    .font(.system(size: 11, design: .monospaced))
-                    .scrollContentBackground(.hidden)
-                    .padding(8)
-                    .frame(minHeight: 80)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6).fill(TF.settingsBg)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(TF.settingsTextTertiary.opacity(0.2), lineWidth: 1)
-                    )
-                Text(L("变量: {text} 转写文本, {selected} 选中文本, {clipboard} 剪切板。留空则直接输出",
-                       "Variables: {text} transcribed text, {selected} selected text, {clipboard} clipboard. Leave empty for raw output."))
-                    .font(.system(size: 10))
-                    .foregroundStyle(TF.settingsTextTertiary)
-            }
-
-            // Save row
-            HStack(spacing: 8) {
-                Spacer()
-
-                // Status indicator
-                if saveStatus == .saved {
-                    HStack(spacing: 4) {
-                        Circle().fill(TF.settingsAccentGreen).frame(width: 6, height: 6)
-                        Text(L("已保存", "Saved")).font(.system(size: 10)).foregroundStyle(TF.settingsAccentGreen)
-                    }
-                    .transition(.opacity)
-                }
-
-                Button(L("保存", "Save")) {
-                    var updated = mode
-                    updated.name = name
-                    updated.processingLabel = processingLabel
-                    updated.prompt = prompt
-                    onSave(updated)
-                    withAnimation { saveStatus = .saved }
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 5)
-                .background(RoundedRectangle(cornerRadius: 6).fill(
-                    isDirty ? TF.settingsNavActive : TF.settingsTextTertiary
-                ))
-                .disabled(!isDirty)
-            }
-
+        HStack(spacing: 8) {
             Spacer()
+
+            // Status indicator
+            if saveStatus == .saved {
+                HStack(spacing: 4) {
+                    Circle().fill(TF.settingsAccentGreen).frame(width: 6, height: 6)
+                    Text(L("已保存", "Saved")).font(.system(size: 10)).foregroundStyle(TF.settingsAccentGreen)
+                }
+                .transition(.opacity)
+            }
+
+            Button(L("保存", "Save")) {
+                var updated = mode
+                updated.name = name
+                updated.processingLabel = processingLabel
+                updated.prompt = prompt
+                onSave(updated)
+                withAnimation { saveStatus = .saved }
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 6).fill(
+                isDirty ? TF.settingsNavActive : TF.settingsTextTertiary
+            ))
+            .disabled(!isDirty)
         }
-        .onAppear { syncFields() }
-        .onChange(of: mode.id) { syncFields() }
+        .onChange(of: mode.id) { _, _ in
+            saveStatus = .clean
+        }
         .onChange(of: name) { _, _ in if saveStatus == .saved { saveStatus = .dirty } }
         .onChange(of: processingLabel) { _, _ in if saveStatus == .saved { saveStatus = .dirty } }
         .onChange(of: prompt) { _, _ in if saveStatus == .saved { saveStatus = .dirty } }
-    }
-
-    private func syncFields() {
-        name = mode.name
-        processingLabel = mode.processingLabel
-        prompt = mode.prompt
-        saveStatus = .clean
     }
 }

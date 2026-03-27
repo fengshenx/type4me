@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // MARK: - Navigation Item
 
@@ -130,38 +131,115 @@ struct SettingsView: View {
     // MARK: - Content
 
     private var content: some View {
-        ZStack {
-            tabPage(.general)    { GeneralSettingsTab() }
-            tabPage(.vocabulary) { VocabularyTab() }
-            tabPage(.modes)      { ModesSettingsTab() }
-            fixedPage(.history)  { HistoryTab(isActive: selectedTab == .history) }
-            tabPage(.about)      { AboutTab() }
-        }
+        SettingsContentHost(selectedTab: selectedTab)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(TF.settingsCard)
     }
+}
 
-    /// Scrollable tab page (most tabs).
-    private func tabPage<V: View>(_ tab: SettingsTab, @ViewBuilder content: () -> V) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                content()
-            }
-            .padding(28)
-        }
-        .opacity(selectedTab == tab ? 1 : 0)
-        .allowsHitTesting(selectedTab == tab)
+private struct SettingsContentHost: NSViewControllerRepresentable {
+    let selectedTab: SettingsTab
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
     }
 
-    /// Fixed-height tab page (no outer scroll, content manages its own scroll).
-    private func fixedPage<V: View>(_ tab: SettingsTab, @ViewBuilder content: () -> V) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            content()
+    func makeNSViewController(context: Context) -> NSViewController {
+        let controller = NSViewController()
+        controller.view = NSView()
+        return controller
+    }
+
+    func updateNSViewController(_ nsViewController: NSViewController, context: Context) {
+        let hostingController = context.coordinator.hostingController(
+            for: selectedTab,
+            rootView: rootView(for: selectedTab, selectedTab: selectedTab)
+        )
+
+        if context.coordinator.activeTab != selectedTab {
+            context.coordinator.activeController?.view.removeFromSuperview()
+
+            if hostingController.parent !== nsViewController {
+                nsViewController.addChild(hostingController)
+            }
+
+            hostingController.view.frame = nsViewController.view.bounds
+            hostingController.view.autoresizingMask = [.width, .height]
+            nsViewController.view.addSubview(hostingController.view)
+            context.coordinator.activeTab = selectedTab
+        } else {
+            hostingController.view.frame = nsViewController.view.bounds
         }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .opacity(selectedTab == tab ? 1 : 0)
-        .allowsHitTesting(selectedTab == tab)
+    }
+
+    private func rootView(for tab: SettingsTab, selectedTab: SettingsTab) -> AnyView {
+        switch tab {
+        case .general:
+            return AnyView(
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        GeneralSettingsTab()
+                    }
+                    .padding(28)
+                }
+            )
+        case .vocabulary:
+            return AnyView(
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        VocabularyTab()
+                    }
+                    .padding(28)
+                }
+            )
+        case .modes:
+            return AnyView(
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ModesSettingsTab()
+                    }
+                    .padding(28)
+                }
+            )
+        case .history:
+            return AnyView(
+                VStack(alignment: .leading, spacing: 0) {
+                    HistoryTab(isActive: selectedTab == .history)
+                }
+                .padding(28)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            )
+        case .about:
+            return AnyView(
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        AboutTab()
+                    }
+                    .padding(28)
+                }
+            )
+        }
+    }
+
+    final class Coordinator {
+        private var controllers: [SettingsTab: NSHostingController<AnyView>] = [:]
+        var activeTab: SettingsTab?
+
+        var activeController: NSHostingController<AnyView>? {
+            guard let activeTab else { return nil }
+            return controllers[activeTab]
+        }
+
+        func hostingController(for tab: SettingsTab, rootView: AnyView) -> NSHostingController<AnyView> {
+            if let controller = controllers[tab] {
+                controller.rootView = rootView
+                return controller
+            }
+
+            let controller = NSHostingController(rootView: rootView)
+            controllers[tab] = controller
+            return controller
+        }
     }
 }
 
