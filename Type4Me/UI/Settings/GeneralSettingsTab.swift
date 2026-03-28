@@ -1202,6 +1202,7 @@ struct GeneralSettingsTab: View, SettingsCardHelpers {
     @AppStorage("tf_visualStyle") private var visualStyle = "timeline"
     @AppStorage("tf_language") private var language = AppLanguage.systemDefault
     @AppStorage("tf_escAbortEnabled") private var escAbortEnabled = true
+    @AppStorage("tf_preserveClipboard") private var preserveClipboard = false
 
     @State private var hasMic = false
     @State private var hasAccessibility = false
@@ -1235,13 +1236,15 @@ struct GeneralSettingsTab: View, SettingsCardHelpers {
 
                 SettingsDivider()
 
-                // Row 2: 两等分 - 开机启动 / 降低音量
+                // Row 2: 四等分 - 开机启动 / 降低音量 / ESC打断 / 保留剪贴板
                 HStack(alignment: .top, spacing: 16) {
                     launchAtLoginRow
                         .frame(maxWidth: .infinity)
                     volumeReductionRow
                         .frame(maxWidth: .infinity)
                     escAbortRow
+                        .frame(maxWidth: .infinity)
+                    preserveClipboardRow
                         .frame(maxWidth: .infinity)
                 }
             }
@@ -1470,6 +1473,30 @@ struct GeneralSettingsTab: View, SettingsCardHelpers {
                     ("off", L("关闭", "Off")),
                 ]
             )
+        }
+        .padding(.vertical, 6)
+    }
+
+    private var preserveClipboardRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(L("保留剪贴板", "Preserve Clipboard").uppercased())
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(0.8)
+                .foregroundStyle(TF.settingsTextTertiary)
+            settingsDropdown(
+                selection: Binding(
+                    get: { preserveClipboard ? "on" : "off" },
+                    set: { preserveClipboard = $0 == "on" }
+                ),
+                options: [
+                    ("off", L("关闭", "Off")),
+                    ("on", L("开启", "On")),
+                ]
+            )
+            Text(L("关闭后仅在输入失败时保留剪贴板", "When off, clipboard is preserved only on injection failure"))
+                .font(.system(size: 10))
+                .foregroundStyle(TF.settingsTextTertiary)
+                .lineSpacing(2)
         }
         .padding(.vertical, 6)
     }
