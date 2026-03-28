@@ -94,6 +94,8 @@ actor RecognitionSession {
     private var speculativeDebounceTask: Task<Void, Never>?
     /// Stores the last LLM error from the early/fresh LLM task, consumed once by stopRecording().
     private var pendingLLMError: Error?
+    /// When true, skip text injection (paste) but still save to clipboard & history.
+    private var injectionAborted = false
 
     // MARK: - Toggle
 
@@ -122,6 +124,7 @@ actor RecognitionSession {
         self.currentMode = effectiveMode
         self.recordingStartTime = nil
         hasEmittedReadyForCurrentSession = false
+        injectionAborted = false
         state = .starting
 
         // Load credentials for selected provider
@@ -335,6 +338,12 @@ actor RecognitionSession {
         await forceReset()
     }
 
+    /// Mark that injection should be skipped. Recognition, clipboard, and history still proceed.
+    func abortInjection() {
+        injectionAborted = true
+        DebugFileLogger.log("abortInjection: injection will be skipped")
+    }
+
     func stopRecording() async {
         guard state == .recording else {
             logger.warning("stopRecording called but state is \(String(describing: self.state))")
@@ -513,21 +522,23 @@ actor RecognitionSession {
                 }
             }
 
-            // Check if session was aborted (ESC pressed during processing)
-            guard state == .postProcessing || state == .injecting || state == .finishing else {
-                DebugFileLogger.log("stop: session was aborted (state=\(state)), skipping injection")
-                return
-            }
-
-            DebugFileLogger.log("stop: injecting +\(ContinuousClock.now - stopT0)")
             state = .injecting
-            let injectionOutcome = injectionEngine.inject(finalText)
             injectionEngine.copyToClipboard(finalText)
+
+            let injectionOutcome: InjectionOutcome
+            if injectionAborted {
+                DebugFileLogger.log("stop: injection aborted by ESC, text saved to clipboard & history")
+                injectionOutcome = .copiedToClipboard
+            } else {
+                DebugFileLogger.log("stop: injecting +\(ContinuousClock.now - stopT0)")
+                injectionOutcome = injectionEngine.inject(finalText)
+            }
             onASREvent?(.finalized(text: finalText, injection: injectionOutcome))
 
             // Save to history
             let recordId = UUID().uuidString
             let duration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
+            let status = injectionAborted ? "aborted" : (llmFailed ? "llm_error" : "completed")
             await historyStore.insert(HistoryRecord(
                 id: recordId,
                 createdAt: Date(),
@@ -536,11 +547,15 @@ actor RecognitionSession {
                 processingMode: currentMode == .direct ? nil : currentMode.name,
                 processedText: processedText,
                 finalText: finalText,
-                status: llmFailed ? "llm_error" : "completed",
+                status: status,
                 characterCount: finalText.count
             ))
 
-            if llmFailed {
+            if injectionAborted {
+                onASREvent?(.error(NSError(domain: "Type4Me", code: -21, userInfo: [
+                    NSLocalizedDescriptionKey: L("已取消粘贴，内容已存入剪贴板和识别历史", "Paste cancelled, text saved to clipboard & history")
+                ])))
+            } else if llmFailed {
                 onASREvent?(.error(NSError(domain: "Type4Me", code: -20, userInfo: [
                     NSLocalizedDescriptionKey: L("LLM 处理失败，原文已存入剪贴板和识别历史", "LLM failed, raw text saved to clipboard & history")
                 ])))
@@ -736,8 +751,7 @@ actor RecognitionSession {
     /// Aggressively tear down all resources and return to idle.
     /// Used when a new recording is requested but the session is stuck
     /// (e.g. stopRecording hung on a WebSocket timeout).
-    /// Also called when user presses ESC to abort recording.
-    func forceReset() async {
+    private func forceReset() async {
         NSLog("[Session] forceReset from state=%@", String(describing: state))
         DebugFileLogger.log("forceReset from state=\(state)")
 
