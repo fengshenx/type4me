@@ -1145,17 +1145,18 @@ class StreamingSenseVoice:
 
     def inference(self, speech):
         if self._onnx_session is not None:
-            x = speech.numpy()[np.newaxis, :, :]  # (1, T, 560)
+            x = speech.numpy()[np.newaxis, :, :]
             x_length = np.array([x.shape[1]], dtype=np.int32)
             language = np.array([0], dtype=np.int32)
-            text_norm = np.array([14], dtype=np.int32)  # withitn
+            text_norm = np.array([14], dtype=np.int32)
             result = self._onnx_session.run(
                 None,
                 {"x": x, "x_length": x_length, "language": language, "text_norm": text_norm},
             )
-            return torch.from_numpy(result[0][0, 4:])  # skip query tokens
+            # ONNX outputs raw logits, CTC decoder needs log_softmax
+            logits = torch.from_numpy(result[0][0, 4:])
+            return torch.nn.functional.log_softmax(logits, dim=-1)
 
-        # PyTorch fallback
         speech = speech[None, :, :]
         speech_lengths = torch.tensor([speech.shape[1]])
         speech = speech.to(self.device)
