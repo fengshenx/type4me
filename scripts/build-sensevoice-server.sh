@@ -59,8 +59,15 @@ pyinstaller \
     server.py
 
 echo ""
-echo "=== Build complete ==="
+echo "=== Signing binaries for macOS Gatekeeper ==="
 DIST="$SERVER_DIR/dist/sensevoice-server"
+# Ad-hoc sign all executables and dylibs to avoid Gatekeeper blocking
+find "$DIST" -type f \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) -exec codesign --force --sign - {} \; 2>/dev/null || true
+codesign --force --sign - "$DIST/sensevoice-server" 2>/dev/null || true
+echo "Signing complete."
+
+echo ""
+echo "=== Build complete ==="
 echo "Output: $DIST"
 du -sh "$DIST" 2>/dev/null || true
 echo ""

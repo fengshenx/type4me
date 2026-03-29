@@ -108,7 +108,10 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 exec "$DIR/sensevoice-server-dist/sensevoice-server" "$@"
 WRAPPER
     chmod +x "$APP_PATH/Contents/MacOS/sensevoice-server"
-    echo "sensevoice-server bundled."
+    # Sign all binaries in the server dist for Gatekeeper
+    find "$APP_PATH/Contents/MacOS/sensevoice-server-dist" -type f \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) \
+        -exec codesign --force --sign "${SIGNING_IDENTITY}" {} \; 2>/dev/null || true
+    echo "sensevoice-server bundled and signed."
 fi
 
 # Copy third-party licenses

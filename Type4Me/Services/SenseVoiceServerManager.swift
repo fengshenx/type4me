@@ -60,15 +60,26 @@ actor SenseVoiceServerManager {
             }
         }
 
-        // Model directory
-        let modelDir = "iic/SenseVoiceSmall"  // FunASR will download/cache automatically
+        // Model directory: prefer bundled model, fallback to ModelScope ID for auto-download
+        let bundledModel = Bundle.main.resourceURL?
+            .appendingPathComponent("Models")
+            .appendingPathComponent("SenseVoiceSmall")
+        let modelDir: String
+        if let bundled = bundledModel, FileManager.default.fileExists(atPath: bundled.path) {
+            modelDir = bundled.path
+            logger.info("Using bundled model at \(bundled.path)")
+        } else {
+            // FunASR will download from ModelScope (~900MB) and cache in ~/.cache/modelscope/
+            modelDir = "iic/SenseVoiceSmall"
+            logger.info("No bundled model, will download from ModelScope")
+        }
 
-        // Hotwords file
+        // Hotwords file (optional, may not exist)
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let hotwordsFile = appSupport
+        let hotwordsPath = appSupport
             .appendingPathComponent("Type4Me")
             .appendingPathComponent("hotwords.txt")
-            .path
+        let hotwordsFile = FileManager.default.fileExists(atPath: hotwordsPath.path) ? hotwordsPath.path : ""
 
         let proc = Process()
         if serverScript.isEmpty {
@@ -100,7 +111,16 @@ actor SenseVoiceServerManager {
 
         let pipe = Pipe()
         proc.standardOutput = pipe
-        proc.standardError = FileHandle.nullDevice
+        // Log stderr to debug file instead of discarding
+        let errPipe = Pipe()
+        proc.standardError = errPipe
+        errPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let msg = String(data: data, encoding: .utf8) else { return }
+            for line in msg.split(separator: "\n") where !line.isEmpty {
+                DebugFileLogger.log("sensevoice-server: \(line)")
+            }
+        }
         self.stdoutPipe = pipe
 
         logger.info("Starting SenseVoice server: \(executable)")
