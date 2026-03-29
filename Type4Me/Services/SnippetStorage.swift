@@ -4,6 +4,59 @@ import Foundation
 enum SnippetStorage {
 
     private static let key = "tf_snippets"
+    private static let seededKey = "tf_snippets_seeded_v1"
+
+    // MARK: - Built-in ASR correction mappings (verified by testing)
+
+    /// Default snippet mappings seeded on first launch.
+    /// Each entry is (trigger, replacement). Triggers are case-insensitive and
+    /// tolerate whitespace variations via buildFlexPattern.
+    ///
+    /// Verified against: Volcengine Seed ASR 2.0, Qwen3-ASR 0.6B/1.7B, SenseVoice-Small.
+    private static let defaultSnippets: [(trigger: String, value: String)] = [
+        // ── vibe coding (all engines consistently fail) ──
+        ("web coding",      "vibe coding"),
+        ("webb coding",     "vibe coding"),
+        ("vab coding",      "vibe coding"),
+        ("vabe coding",     "vibe coding"),
+        ("vibes coding",    "vibe coding"),
+        ("Vipcoding",       "vibe coding"),
+        ("vipe coding",     "vibe coding"),
+
+        // ── Claude → Cloud (universal error) ──
+        ("Cloud Code",      "Claude Code"),
+
+        // ── Model & company names ──
+        ("Asthropic",       "Anthropic"),
+        ("ELMA",            "Llama"),
+        ("OELMA",           "Ollama"),
+        ("finight tuning",  "fine-tuning"),
+
+        // ── Frameworks & tools ──
+        ("long chain",      "LangChain"),
+        ("long train",      "LangChain"),
+        ("LongChain",       "LangChain"),
+
+        // ── SenseVoice-specific garbled output ──
+        ("pinecom",         "Pinecone"),
+        ("typepescript",    "TypeScript"),
+        ("contexwin",       "context window"),
+        ("multiag",         "multi-agent"),
+        ("deepse",          "DeepSeek"),
+    ]
+
+    /// Seeds default ASR correction snippets, merging with any existing user snippets.
+    /// Skips entries whose trigger already exists (case-insensitive) to avoid duplicates.
+    static func seedIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: seededKey) else { return }
+        var existing = load()
+        let existingTriggers = Set(existing.map { $0.trigger.lowercased() })
+        for snippet in defaultSnippets where !existingTriggers.contains(snippet.trigger.lowercased()) {
+            existing.append(snippet)
+        }
+        save(existing)
+        UserDefaults.standard.set(true, forKey: seededKey)
+    }
 
     static func load() -> [(trigger: String, value: String)] {
         guard let data = UserDefaults.standard.data(forKey: key),

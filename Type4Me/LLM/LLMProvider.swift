@@ -15,6 +15,7 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable {
     case zhipu
     case claude
     case ollama
+    case localQwen
 
     var displayName: String {
         switch self {
@@ -30,6 +31,7 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable {
         case .zhipu:       return L("智谱 (GLM)", "Zhipu (GLM)")
         case .claude:      return "Claude (Anthropic)"
         case .ollama:      return L("Ollama (本地模型)", "Ollama (Local)")
+        case .localQwen:   return L("本地 Qwen (离线)", "Local Qwen (Offline)")
         }
     }
 
@@ -47,6 +49,7 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable {
         case .zhipu:       return "https://open.bigmodel.cn/api/paas/v4"
         case .claude:      return "https://api.anthropic.com/v1"
         case .ollama:      return "http://localhost:11434/v1"
+        case .localQwen:   return "http://127.0.0.1:0/v1"  // Dynamic port from SenseVoiceServerManager
         }
     }
 
@@ -54,9 +57,14 @@ enum LLMProvider: String, CaseIterable, Codable, Sendable {
         self != .claude
     }
 
+    /// Whether this is a local provider bundled with the app (no external service).
+    var isLocal: Bool {
+        self == .localQwen || self == .ollama
+    }
+
     /// Whether this provider requires an API key for authentication.
     var requiresAPIKey: Bool {
-        self != .ollama
+        self != .ollama && self != .localQwen
     }
 
     /// Thinking/reasoning disable strategy for this provider.

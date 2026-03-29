@@ -50,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(showDock ? .regular : .accessory)
         KeychainService.migrateIfNeeded()
         HotwordStorage.seedIfNeeded()
+        SnippetStorage.seedIfNeeded()
 
         DebugFileLogger.startSession()
         DebugFileLogger.log("applicationDidFinishLaunching")
@@ -109,15 +110,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case .completed:
                         appState.stopRecording()
                         self.hotkeyManager.isProcessing = false
+                        self.hotkeyManager.resetActiveState()
                     case .processingResult(let text):
                         appState.showProcessingResult(text)
                         self.hotkeyManager.isProcessing = true
                     case .finalized(let text, let injection):
                         appState.finalize(text: text, outcome: injection)
                         self.hotkeyManager.isProcessing = false
+                        self.hotkeyManager.resetActiveState()
                     case .error(let error):
                         appState.showError(self.userFacingMessage(for: error))
                         self.hotkeyManager.isProcessing = false
+                        self.hotkeyManager.resetActiveState()
                     }
                 }
             }
@@ -184,9 +188,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Start SenseVoice Python server if local ASR is selected
-        if KeychainService.selectedASRProvider == .sherpa {
-            if ModelManager.isSenseVoiceBundled {
+        // Start SenseVoice Python server if local ASR or local LLM is selected
+        let needsLocalServer = KeychainService.selectedASRProvider == .sherpa
+            || KeychainService.selectedLLMProvider == .localQwen
+        if needsLocalServer {
+            if ModelManager.isSenseVoiceBundled || LocalQwenLLMConfig.isModelAvailable {
                 Task {
                     do {
                         try await SenseVoiceServerManager.shared.start()
@@ -194,7 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         NSLog("[App] SenseVoice server start failed: %@", String(describing: error))
                     }
                 }
-            } else {
+            } else if KeychainService.selectedASRProvider == .sherpa {
                 // Cloud-only build: local ASR not available, switch to default cloud provider
                 NSLog("[App] Local ASR not available (cloud build), switching to volcano")
                 KeychainService.selectedASRProvider = .volcano

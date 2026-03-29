@@ -8,3 +8,4 @@ soundfile
 fastapi[standard]
 uvicorn[standard]
 numpy<2
+llama-cpp-python

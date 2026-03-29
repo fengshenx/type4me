@@ -37,11 +37,12 @@ actor DoubaoChatClient: LLMClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 30
 
+        let useStreaming = provider != .localQwen
         let disableField = provider.thinkingDisableField
         let body = ChatRequest(
             model: config.model,
             messages: [ChatMessage(role: "user", content: finalPrompt)],
-            stream: true,
+            stream: useStreaming,
             thinking: disableField == .thinking ? ThinkingConfig(type: "disabled") : nil,
             enable_thinking: disableField == .enableThinking ? false : nil,
             reasoning_effort: disableField == .reasoningEffort ? "none" : nil,
@@ -50,19 +51,32 @@ actor DoubaoChatClient: LLMClient {
         )
         request.httpBody = try JSONEncoder().encode(body)
 
-        logger.info("LLM request: \(text.count) chars, endpoint=\(config.model)")
+        logger.info("LLM request: \(text.count) chars, endpoint=\(config.model), stream=\(useStreaming)")
 
+        let result: String
+        if useStreaming {
+            result = try await processStreaming(request: request, model: config.model)
+        } else {
+            result = try await processNonStreaming(request: request, model: config.model)
+        }
+
+        logger.info("LLM result: \(result.count) chars")
+        return result.strippingThinkTags()
+    }
+
+    // MARK: - Streaming (SSE)
+
+    private func processStreaming(request: URLRequest, model: String) async throws -> String {
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw LLMError.requestFailed(0)
         }
         guard http.statusCode == 200 else {
             logger.error("LLM HTTP \(http.statusCode)")
-            DebugFileLogger.log("LLM[\(config.model)]: HTTP \(http.statusCode)")
+            DebugFileLogger.log("LLM[\(model)]: HTTP \(http.statusCode)")
             throw LLMError.requestFailed(http.statusCode)
         }
 
-        // Parse SSE stream
         var result = ""
         var lineCount = 0
         var firstDataLine: String?
@@ -80,16 +94,37 @@ actor DoubaoChatClient: LLMClient {
         }
 
         if result.isEmpty && lineCount > 0 {
-            DebugFileLogger.log("LLM[\(config.model)]: \(lineCount) lines but 0 content chars; first data=\(firstDataLine ?? "(none)")")
+            DebugFileLogger.log("LLM[\(model)]: \(lineCount) lines but 0 content chars; first data=\(firstDataLine ?? "(none)")")
             throw LLMError.emptyResponse(firstDataLine)
         }
         if result.isEmpty {
-            DebugFileLogger.log("LLM[\(config.model)]: 0 lines received (connection closed immediately)")
+            DebugFileLogger.log("LLM[\(model)]: 0 lines received (connection closed immediately)")
             throw LLMError.emptyResponse(nil)
         }
-        logger.info("LLM result: \(result.count) chars")
+        return result
+    }
 
-        return result.strippingThinkTags()
+    // MARK: - Non-streaming (single JSON response)
+
+    private func processNonStreaming(request: URLRequest, model: String) async throws -> String {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw LLMError.requestFailed(0)
+        }
+        guard http.statusCode == 200 else {
+            logger.error("LLM HTTP \(http.statusCode)")
+            DebugFileLogger.log("LLM[\(model)]: HTTP \(http.statusCode)")
+            throw LLMError.requestFailed(http.statusCode)
+        }
+
+        guard let json = try? JSONDecoder().decode(ChatCompletionResponse.self, from: data),
+              let content = json.choices.first?.message.content, !content.isEmpty
+        else {
+            let raw = String(data: data.prefix(300), encoding: .utf8)
+            DebugFileLogger.log("LLM[\(model)]: non-streaming empty; raw=\(raw ?? "(nil)")")
+            throw LLMError.emptyResponse(raw)
+        }
+        return content
     }
 }
 
@@ -115,6 +150,20 @@ struct ChatMessage: Codable, Sendable, Equatable {
     let content: String
 }
 
+// Non-streaming response
+struct ChatCompletionResponse: Decodable, Sendable {
+    let choices: [CompletionChoice]
+}
+
+struct CompletionChoice: Decodable, Sendable {
+    let message: CompletionMessage
+}
+
+struct CompletionMessage: Decodable, Sendable {
+    let content: String?
+}
+
+// Streaming response (SSE chunks)
 struct ChatStreamChunk: Decodable, Sendable {
     let choices: [ChunkChoice]
 }

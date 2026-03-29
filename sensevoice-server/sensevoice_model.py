@@ -1125,19 +1125,27 @@ class StreamingSenseVoice:
                 encoder_out, _ = self.model.encoder(speech, speech_lengths)
             logits = self.model.ctc.log_softmax(encoder_out)[0, 4:].numpy()
 
-        # Greedy decode on full sequence
-        token_ids = logits.argmax(axis=-1).tolist()
-        prev = -1
-        filtered = []
-        for t in token_ids:
-            if t != 0 and t != prev:  # 0 = blank
-                filtered.append(t)
-            prev = t
-
-        if not filtered:
-            return ""
-        text = self.tokenizer.decode(filtered)
-        return _clean_text(text)
+        # Decode: beam search (with hotword biasing) or greedy
+        if self.beam_size > 1:
+            probs = torch.tensor(logits, dtype=torch.float32)
+            self.decoder.reset()
+            res = self.decoder.ctc_prefix_beam_search(
+                probs, beam_size=self.beam_size, is_last=True
+            )
+            _, text = self.decode(res["times"][0], res["tokens"][0])
+            return text
+        else:
+            token_ids = logits.argmax(axis=-1).tolist()
+            prev = -1
+            filtered = []
+            for t in token_ids:
+                if t != 0 and t != prev:  # 0 = blank
+                    filtered.append(t)
+                prev = t
+            if not filtered:
+                return ""
+            text = self.tokenizer.decode(filtered)
+            return _clean_text(text)
 
     def get_size(self):
         effective_size = self.cur_idx + 1 - self.padding

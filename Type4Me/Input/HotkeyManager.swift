@@ -37,6 +37,14 @@ final class HotkeyManager: NSObject {
     /// When true, LLM post-processing is in progress (ESC can also abort this).
     var isProcessing = false
 
+    /// Reset all active recording/hold state. Called when session ends (completed/error/finalized)
+    /// to ensure hotkeys and ESC don't remain stuck.
+    func resetActiveState() {
+        activeToggleModeId = nil
+        for key in toggleState.keys { toggleState[key] = false }
+        for key in holdState.keys { holdState[key] = false }
+    }
+
     /// Called when recording is stopped by a different mode's hotkey.
     /// The UUID is the new mode's ID that should be used for processing.
     var onCrossModeStop: ((UUID) -> Void)?

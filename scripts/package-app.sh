@@ -100,6 +100,7 @@ fi
 SENSEVOICE_DIST="$PROJECT_DIR/sensevoice-server/dist/sensevoice-server"
 if [ "${BUNDLE_LOCAL_ASR:-0}" = "1" ] && [ -d "$SENSEVOICE_DIST" ]; then
     echo "Bundling sensevoice-server..."
+    rm -rf "$APP_PATH/Contents/MacOS/sensevoice-server-dist" "$APP_PATH/Contents/MacOS/sensevoice-server"
     cp -R "$SENSEVOICE_DIST" "$APP_PATH/Contents/MacOS/sensevoice-server-dist"
     # Create a wrapper script at the expected path
     cat > "$APP_PATH/Contents/MacOS/sensevoice-server" << 'WRAPPER'
@@ -114,10 +115,40 @@ WRAPPER
     echo "sensevoice-server bundled and signed."
 fi
 
+# Copy LLM model if available (for local LLM DMG builds)
+LLM_MODEL_DIR="$PROJECT_DIR/sensevoice-server/models"
+LLM_MODEL_SIZE="${BUNDLE_LOCAL_LLM:-0}"  # 0=none, 4b, 9b
+if [ "$LLM_MODEL_SIZE" = "9b" ] && [ -f "$LLM_MODEL_DIR/Qwen3.5-9B-Q4_K_M.gguf" ]; then
+    echo "Bundling Qwen3.5-9B LLM model (5.3GB)..."
+    mkdir -p "$APP_PATH/Contents/Resources/Models"
+    cp "$LLM_MODEL_DIR/Qwen3.5-9B-Q4_K_M.gguf" "$APP_PATH/Contents/Resources/Models/qwen3.5-9b-q4_k_m.gguf"
+    echo "Qwen3.5-9B model bundled."
+elif [ "$LLM_MODEL_SIZE" = "4b" ] && [ -f "$LLM_MODEL_DIR/qwen3-4b-q4_k_m.gguf" ]; then
+    echo "Bundling Qwen3-4B LLM model (2.3GB)..."
+    mkdir -p "$APP_PATH/Contents/Resources/Models"
+    cp "$LLM_MODEL_DIR/qwen3-4b-q4_k_m.gguf" "$APP_PATH/Contents/Resources/Models/qwen3-4b-q4_k_m.gguf"
+    echo "Qwen3-4B model bundled."
+fi
+
 # Copy third-party licenses
 cp "$PROJECT_DIR/Type4Me/Resources/THIRD_PARTY_LICENSES.txt" "$APP_PATH/Contents/Resources/" 2>/dev/null || true
 
 echo "Signing with '${SIGNING_IDENTITY}'..."
+# PyInstaller's sensevoice-server-dist contains .dylibs and dist-info dirs
+# that confuse codesign's bundle detection. Move server files out temporarily.
+SV_TEMP=""
+SV_DIST="$APP_PATH/Contents/MacOS/sensevoice-server-dist"
+SV_WRAPPER="$APP_PATH/Contents/MacOS/sensevoice-server"
+if [ -d "$SV_DIST" ] || [ -f "$SV_WRAPPER" ]; then
+    SV_TEMP="$(mktemp -d)"
+    [ -d "$SV_DIST" ] && mv "$SV_DIST" "$SV_TEMP/sensevoice-server-dist"
+    [ -f "$SV_WRAPPER" ] && mv "$SV_WRAPPER" "$SV_TEMP/sensevoice-server"
+fi
 codesign -f -s "$SIGNING_IDENTITY" "$APP_PATH" 2>/dev/null && echo "Signed." || echo "Signing skipped (no identity available)."
+if [ -n "$SV_TEMP" ]; then
+    [ -d "$SV_TEMP/sensevoice-server-dist" ] && mv "$SV_TEMP/sensevoice-server-dist" "$SV_DIST"
+    [ -f "$SV_TEMP/sensevoice-server" ] && mv "$SV_TEMP/sensevoice-server" "$SV_WRAPPER"
+    rm -rf "$SV_TEMP"
+fi
 
 echo "App bundle ready at $APP_PATH"

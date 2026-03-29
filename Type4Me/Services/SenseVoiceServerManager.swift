@@ -1,9 +1,24 @@
 import Foundation
 import os
 
-/// Manages the Python SenseVoice ASR server process.
+/// Manages the local ASR Python server process.
+/// On Apple Silicon: starts Qwen3-ASR server (MLX/Metal).
+/// On Intel: starts SenseVoice server (ONNX/CPU).
 actor SenseVoiceServerManager {
     static let shared = SenseVoiceServerManager()
+
+    /// Whether this Mac has Apple Silicon (ARM64).
+    private static let isAppleSilicon: Bool = {
+        #if arch(arm64)
+        return true
+        #else
+        return false
+        #endif
+    }()
+
+    /// Port of the running server, accessible synchronously from any isolation context.
+    /// Set by actor-isolated `start()`, read by sync callers like KeychainService.
+    nonisolated(unsafe) private(set) static var currentPort: Int?
 
     private let logger = Logger(subsystem: "com.type4me.sensevoice", category: "ServerManager")
 
@@ -23,95 +38,29 @@ actor SenseVoiceServerManager {
         return URL(string: "http://127.0.0.1:\(port)/health")
     }
 
-    /// Start the Python SenseVoice server.
-    /// - The server binary is at `Contents/MacOS/sensevoice-server` in the app bundle during development,
-    ///   or we use the venv Python directly for now.
+    /// Start the local ASR server (Qwen3-ASR on ARM64, SenseVoice on x86_64).
     func start() async throws {
         guard !isRunning else {
             logger.info("Server already running on port \(self.port ?? 0)")
             return
         }
 
-        // For development: use venv Python + server.py
-        // For production: use PyInstaller binary at Bundle.main.executableURL/../sensevoice-server
-        let serverScript: String
-        let executable: String
-
-        // Try PyInstaller binary first, fallback to venv Python
-        let bundledBinary = Bundle.main.executableURL?
-            .deletingLastPathComponent()
-            .appendingPathComponent("sensevoice-server")
-            .path
-
-        if let bin = bundledBinary, FileManager.default.fileExists(atPath: bin) {
-            executable = bin
-            serverScript = ""  // binary mode, no script needed
-        } else {
-            // Development mode: find sensevoice-server directory
-            let devServerDir = findDevServerDir()
-            guard let dir = devServerDir else {
-                throw ServerError.serverNotFound
-            }
-            executable = (dir as NSString).appendingPathComponent(".venv/bin/python")
-            serverScript = (dir as NSString).appendingPathComponent("server.py")
-
-            guard FileManager.default.fileExists(atPath: executable) else {
-                throw ServerError.venvNotFound
-            }
-        }
-
-        // Model directory: prefer bundled model, fallback to ModelScope ID for auto-download
-        let bundledModel = Bundle.main.resourceURL?
-            .appendingPathComponent("Models")
-            .appendingPathComponent("SenseVoiceSmall")
-        let modelDir: String
-        if let bundled = bundledModel, FileManager.default.fileExists(atPath: bundled.path) {
-            modelDir = bundled.path
-            logger.info("Using bundled model at \(bundled.path)")
-        } else {
-            // FunASR will download from ModelScope (~900MB) and cache in ~/.cache/modelscope/
-            modelDir = "iic/SenseVoiceSmall"
-            logger.info("No bundled model, will download from ModelScope")
-        }
-
-        // Hotwords file (optional, may not exist)
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let hotwordsPath = appSupport
-            .appendingPathComponent("Type4Me")
-            .appendingPathComponent("hotwords.txt")
-        let hotwordsFile = FileManager.default.fileExists(atPath: hotwordsPath.path) ? hotwordsPath.path : ""
-
         let proc = Process()
-        if serverScript.isEmpty {
-            proc.executableURL = URL(fileURLWithPath: executable)
-            proc.arguments = [
-                "--model-dir", modelDir,
-                "--port", "0",
-                "--hotwords-file", hotwordsFile,
-                "--beam-size", "3",
-                "--context-score", "6.0",
-                "--device", "auto",
-                "--language", "auto",
-                "--textnorm",
-                "--padding", "8",
-                "--chunk-size", "10",
-            ]
+        var args: [String] = []
+
+        if Self.isAppleSilicon {
+            try configureQwen3Server(proc: proc, args: &args)
         } else {
-            proc.executableURL = URL(fileURLWithPath: executable)
-            proc.arguments = [
-                serverScript,
-                "--model-dir", modelDir,
-                "--port", "0",
-                "--hotwords-file", hotwordsFile,
-                "--beam-size", "3",
-                "--context-score", "6.0",
-                "--device", "auto",
-                "--language", "auto",
-                "--textnorm",
-                "--padding", "8",
-                "--chunk-size", "10",
-            ]
+            try configureSenseVoiceServer(proc: proc, args: &args)
         }
+
+        // LLM model (optional, for local chat completions endpoint)
+        if let llmPath = LocalQwenLLMConfig.modelPath {
+            args += ["--llm-model", llmPath]
+            logger.info("LLM model found at \(llmPath)")
+        }
+
+        proc.arguments = args
 
         let pipe = Pipe()
         proc.standardOutput = pipe
@@ -127,7 +76,8 @@ actor SenseVoiceServerManager {
         }
         self.stdoutPipe = pipe
 
-        logger.info("Starting SenseVoice server: \(executable)")
+        let serverType = Self.isAppleSilicon ? "Qwen3-ASR" : "SenseVoice"
+        logger.info("Starting \(serverType) server: \(proc.executableURL?.path ?? "?")")
 
         do {
             try proc.run()
@@ -145,6 +95,7 @@ actor SenseVoiceServerManager {
             throw ServerError.portDiscoveryFailed
         }
         self.port = discoveredPort
+        Self.currentPort = discoveredPort
         logger.info("SenseVoice server started on port \(discoveredPort)")
 
         // Wait for health check
@@ -162,6 +113,7 @@ actor SenseVoiceServerManager {
         }
         process = nil
         port = nil
+        Self.currentPort = nil
         stdoutPipe = nil
         logger.info("SenseVoice server stopped")
     }
@@ -179,21 +131,155 @@ actor SenseVoiceServerManager {
 
     // MARK: - Private
 
-    private func findDevServerDir() -> String? {
-        // Walk up from the binary location to find sensevoice-server/
-        // In dev: binary is at .build/release/Type4Me, project root has sensevoice-server/
+    // MARK: - Qwen3-ASR (Apple Silicon)
+
+    private func configureQwen3Server(proc: Process, args: inout [String]) throws {
+        let serverScript: String
+        let executable: String
+
+        // Dev mode: qwen3-asr-server/.venv/bin/python + server.py
+        // Production: bundled binary at Contents/MacOS/qwen3-asr-server
+        let devDir = findDevServerDir(name: "qwen3-asr-server")
+        if let dir = devDir {
+            executable = (dir as NSString).appendingPathComponent(".venv/bin/python")
+            serverScript = (dir as NSString).appendingPathComponent("server.py")
+            guard FileManager.default.fileExists(atPath: executable) else {
+                throw ServerError.venvNotFound
+            }
+        } else {
+            let bundledBinary = Bundle.main.executableURL?
+                .deletingLastPathComponent()
+                .appendingPathComponent("qwen3-asr-server")
+                .path
+            guard let bin = bundledBinary, FileManager.default.fileExists(atPath: bin) else {
+                throw ServerError.serverNotFound
+            }
+            executable = bin
+            serverScript = ""
+        }
+
+        // Model path: bundled or ModelScope cache
+        let modelPath = resolveQwen3ModelPath()
+        logger.info("Qwen3-ASR model: \(modelPath)")
+
+        // Hotwords file (same as SenseVoice)
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let hotwordsPath = appSupport
+            .appendingPathComponent("Type4Me")
+            .appendingPathComponent("hotwords.txt")
+        let hotwordsFile = FileManager.default.fileExists(atPath: hotwordsPath.path) ? hotwordsPath.path : ""
+
+        proc.executableURL = URL(fileURLWithPath: executable)
+        if !serverScript.isEmpty {
+            args.append(serverScript)
+        }
+        args += [
+            "--model-path", modelPath,
+            "--port", "0",
+            "--hotwords-file", hotwordsFile,
+        ]
+        logger.info("Starting Qwen3-ASR server")
+    }
+
+    private func resolveQwen3ModelPath() -> String {
+        // 1. Bundled in app (production DMG)
+        let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("Models")
+            .appendingPathComponent("Qwen3-ASR")
+        if let b = bundled, FileManager.default.fileExists(atPath: b.path) {
+            return b.path
+        }
+        // 2. App Support (user-downloaded)
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let userModel = appSupport
+            .appendingPathComponent("Type4Me")
+            .appendingPathComponent("Models/Qwen3-ASR")
+        if FileManager.default.fileExists(atPath: userModel.path) {
+            return userModel.path
+        }
+        // 3. ModelScope cache (dev fallback)
+        let cache06 = NSHomeDirectory() + "/.cache/modelscope/hub/models/Qwen/Qwen3-ASR-0.6B"
+        if FileManager.default.fileExists(atPath: cache06) { return cache06 }
+        let cache17 = NSHomeDirectory() + "/.cache/modelscope/hub/models/Qwen/Qwen3-ASR-1.7B"
+        if FileManager.default.fileExists(atPath: cache17) { return cache17 }
+        // Last resort
+        return cache06
+    }
+
+    // MARK: - SenseVoice (Intel fallback)
+
+    private func configureSenseVoiceServer(proc: Process, args: inout [String]) throws {
+        let serverScript: String
+        let executable: String
+
+        let devDir = findDevServerDir(name: "sensevoice-server")
+        if let dir = devDir {
+            executable = (dir as NSString).appendingPathComponent(".venv/bin/python")
+            serverScript = (dir as NSString).appendingPathComponent("server.py")
+            guard FileManager.default.fileExists(atPath: executable) else {
+                throw ServerError.venvNotFound
+            }
+        } else {
+            let bundledBinary = Bundle.main.executableURL?
+                .deletingLastPathComponent()
+                .appendingPathComponent("sensevoice-server")
+                .path
+            guard let bin = bundledBinary, FileManager.default.fileExists(atPath: bin) else {
+                throw ServerError.serverNotFound
+            }
+            executable = bin
+            serverScript = ""
+        }
+
+        let bundledModel = Bundle.main.resourceURL?
+            .appendingPathComponent("Models")
+            .appendingPathComponent("SenseVoiceSmall")
+        let modelDir: String
+        if let bundled = bundledModel, FileManager.default.fileExists(atPath: bundled.path) {
+            modelDir = bundled.path
+        } else {
+            modelDir = "iic/SenseVoiceSmall"
+        }
+
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let hotwordsPath = appSupport
+            .appendingPathComponent("Type4Me")
+            .appendingPathComponent("hotwords.txt")
+        let hotwordsFile = FileManager.default.fileExists(atPath: hotwordsPath.path) ? hotwordsPath.path : ""
+
+        proc.executableURL = URL(fileURLWithPath: executable)
+        if !serverScript.isEmpty {
+            args.append(serverScript)
+        }
+        args += [
+            "--model-dir", modelDir,
+            "--port", "0",
+            "--hotwords-file", hotwordsFile,
+            "--beam-size", "3",
+            "--context-score", "6.0",
+            "--device", "auto",
+            "--language", "auto",
+            "--textnorm",
+            "--padding", "8",
+            "--chunk-size", "10",
+        ]
+        logger.info("Starting SenseVoice server")
+    }
+
+    // MARK: - Dev server discovery
+
+    private func findDevServerDir(name: String) -> String? {
+        // Walk up from binary location to find server directory
         var dir = Bundle.main.bundlePath
         for _ in 0..<5 {
             dir = (dir as NSString).deletingLastPathComponent
-            let candidate = (dir as NSString).appendingPathComponent("sensevoice-server")
+            let candidate = (dir as NSString).appendingPathComponent(name)
             if FileManager.default.fileExists(atPath: (candidate as NSString).appendingPathComponent("server.py")) {
                 return candidate
             }
         }
-        // Also check ~/projects/type4me/sensevoice-server
         let home = NSHomeDirectory()
-        let fallback = (home as NSString)
-            .appendingPathComponent("projects/type4me/sensevoice-server")
+        let fallback = (home as NSString).appendingPathComponent("projects/type4me/\(name)")
         if FileManager.default.fileExists(atPath: (fallback as NSString).appendingPathComponent("server.py")) {
             return fallback
         }
