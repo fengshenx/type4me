@@ -107,7 +107,8 @@ def main():
     parser.add_argument("--language", default="auto", help="auto, zh, en, ja, ko, yue")
     parser.add_argument("--textnorm", action="store_true", default=True, help="Enable ITN (punctuation + number formatting)")
     parser.add_argument("--no-textnorm", dest="textnorm", action="store_false")
-    parser.add_argument("--padding", type=int, default=16, help="Encoder context padding frames (higher = more accurate, slower)")
+    parser.add_argument("--padding", type=int, default=8, help="Encoder context padding frames (higher = more accurate, slower)")
+    parser.add_argument("--chunk-size", type=int, default=8, help="Encoder chunk size in LFR frames (~60ms each)")
     args = parser.parse_args()
 
     global _model
@@ -131,6 +132,7 @@ def main():
         language=args.language,
         textnorm=args.textnorm,
         padding=args.padding,
+        chunk_size=args.chunk_size,
     )
     print("Model loaded.", flush=True)
 

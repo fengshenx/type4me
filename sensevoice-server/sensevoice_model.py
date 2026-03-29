@@ -1196,7 +1196,8 @@ def load_model(
     device="auto",
     language="auto",
     textnorm=True,
-    padding=16,
+    padding=8,
+    chunk_size=8,
 ):
     """Load SenseVoice model and create a StreamingSenseVoice wrapper.
 
@@ -1218,5 +1219,15 @@ def load_model(
         language=language,
         textnorm=textnorm,
         padding=padding,
+        chunk_size=chunk_size,
     )
+
+    # Warmup: run one dummy inference to eliminate PyTorch JIT cold start
+    print("Warming up encoder...", flush=True)
+    dummy_samples = [0] * 16000  # 1 second of silence
+    for _ in model.streaming_inference(dummy_samples, is_last=True):
+        pass
+    model.reset()
+    print("Warmup complete.", flush=True)
+
     return model
