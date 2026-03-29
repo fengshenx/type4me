@@ -1112,7 +1112,7 @@ class StreamingSenseVoice:
                 None,
                 {"x": x, "x_length": x_length, "language": language, "text_norm": text_norm},
             )
-            logits = result[0][0]  # (T, vocab_size)
+            logits = result[0][0, 4:]  # (T, vocab_size), skip first 4 query tokens
         else:
             # PyTorch fallback
             speech = torch.tensor(features).unsqueeze(0).to(self.device)
@@ -1203,6 +1203,8 @@ def _clean_punctuation(text: str) -> str:
     """Remove consecutive duplicate punctuation and fix common artifacts."""
     if not text:
         return text
+    # Strip SenseVoice tags like <|zh|><|NEUTRAL|><|Speech|><|withitn|>
+    text = re.sub(r'<\|[^|]+\|>', '', text).strip()
     # Remove consecutive punctuation where first is a comma-like and second is a period-like
     # e.g. "，。" → "。"  "，！" → "！"  ",." → "."
     text = re.sub(r'[,，、;；][。.!！?？]', lambda m: m.group()[-1], text)
