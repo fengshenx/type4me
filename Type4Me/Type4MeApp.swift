@@ -184,14 +184,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Start SenseVoice Python server if needed
+        // Start SenseVoice Python server if local ASR is selected
         if KeychainService.selectedASRProvider == .sherpa {
-            Task {
-                do {
-                    try await SenseVoiceServerManager.shared.start()
-                } catch {
-                    NSLog("[App] SenseVoice server start failed: %@", String(describing: error))
+            if ModelManager.isSenseVoiceBundled {
+                Task {
+                    do {
+                        try await SenseVoiceServerManager.shared.start()
+                    } catch {
+                        NSLog("[App] SenseVoice server start failed: %@", String(describing: error))
+                    }
                 }
+            } else {
+                // Cloud-only build: local ASR not available, switch to default cloud provider
+                NSLog("[App] Local ASR not available (cloud build), switching to volcano")
+                KeychainService.selectedASRProvider = .volcano
             }
         }
 
