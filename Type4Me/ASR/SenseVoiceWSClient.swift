@@ -15,6 +15,14 @@ actor SenseVoiceWSClient: SpeechRecognizer {
     private var currentText: String = ""
     private var confirmedSegments: [String] = []
 
+    // Qwen3 incremental speculative transcription
+    private var qwen3DebounceTask: Task<Void, Never>?
+    private var allAudioData: Data = Data()
+    private var qwen3ConfirmedOffset: Int = 0
+    private var qwen3ConfirmedSegments: [String] = []
+    private var qwen3LatestText: String?
+    private var qwen3HasPendingAudio: Bool = false
+
     var events: AsyncStream<RecognitionEvent> {
         if let existing = _events { return existing }
         let (stream, continuation) = AsyncStream<RecognitionEvent>.makeStream()
@@ -32,6 +40,7 @@ actor SenseVoiceWSClient: SpeechRecognizer {
         self._events = stream
         currentText = ""
         confirmedSegments = []
+        resetQwen3State()
 
         // Ensure server is running (may still be loading model from app launch)
         let mgr = SenseVoiceServerManager.shared
@@ -69,15 +78,115 @@ actor SenseVoiceWSClient: SpeechRecognizer {
     func sendAudio(_ data: Data) async throws {
         guard let task = webSocketTask else { return }
         try await task.send(.data(data))
+
+        // Accumulate audio for Qwen3 speculative transcription
+        allAudioData.append(data)
+        qwen3HasPendingAudio = true
+        scheduleSpeculativeQwen3()
     }
 
     // MARK: - End Audio
 
     func endAudio() async throws {
         guard let task = webSocketTask else { return }
-        // Empty data signals end of audio
-        try await task.send(.data(Data()))
-        logger.info("SenseVoiceWS sent end-of-audio signal")
+        qwen3DebounceTask?.cancel()
+
+        let newAudioBytes = allAudioData.count - qwen3ConfirmedOffset
+        let hasQwen3Result = !qwen3ConfirmedSegments.isEmpty
+        let newAudioTrivial = newAudioBytes < 2 * 16000 * 2  // < 2s of new audio @ 16kHz 16-bit
+
+        if hasQwen3Result && newAudioTrivial {
+            // Qwen3 has confirmed most of the audio, only a short tail left
+            var finalText = qwen3ConfirmedSegments.joined()
+
+            if newAudioBytes > 3200, let port = SenseVoiceServerManager.currentQwen3Port {
+                // Quick Qwen3 call for the short tail
+                let deltaAudio = allAudioData.suffix(from: qwen3ConfirmedOffset)
+                let url = URL(string: "http://127.0.0.1:\(port)/transcribe")!
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+                request.httpBody = Data(deltaAudio)
+                request.timeoutInterval = 10
+                if let (data, _) = try? await URLSession.shared.data(for: request),
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let tailText = json["text"] as? String, !tailText.isEmpty {
+                    finalText += tailText
+                }
+            }
+
+            // Use Qwen3 assembled result directly
+            task.cancel(with: .normalClosure, reason: nil)
+            confirmedSegments = [finalText]
+            currentText = ""
+            let transcript = RecognitionTranscript(
+                confirmedSegments: confirmedSegments,
+                partialText: "",
+                authoritativeText: finalText,
+                isFinal: true
+            )
+            eventContinuation?.yield(.transcript(transcript))
+            eventContinuation?.yield(.completed)
+            DebugFileLogger.log("Qwen3 final: used incremental result (\(qwen3ConfirmedSegments.count) segments, \(finalText.count) chars)")
+        } else {
+            // No Qwen3 result or too much new audio, fall back to SenseVoice final
+            try await task.send(.data(Data()))
+            DebugFileLogger.log("SenseVoice final: fallback (Qwen3 segments=\(qwen3ConfirmedSegments.count), newAudio=\(newAudioBytes)b)")
+        }
+
+        resetQwen3State()
+    }
+
+    // MARK: - Qwen3 Speculative
+
+    private func scheduleSpeculativeQwen3() {
+        qwen3DebounceTask?.cancel()
+        qwen3DebounceTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(1500))
+            guard !Task.isCancelled else { return }
+            guard let self else { return }
+            guard await self.qwen3HasPendingAudio else { return }
+            guard let port = SenseVoiceServerManager.currentQwen3Port else { return }
+
+            let deltaAudio = await self.allAudioData.suffix(from: self.qwen3ConfirmedOffset)
+            guard deltaAudio.count > 3200 else { return }  // at least 100ms of audio
+
+            let url = URL(string: "http://127.0.0.1:\(port)/transcribe")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+            request.httpBody = Data(deltaAudio)
+            request.timeoutInterval = 30
+
+            DebugFileLogger.log("Qwen3 speculative: sending \(deltaAudio.count) bytes (offset \(await self.qwen3ConfirmedOffset))")
+
+            do {
+                let (data, _) = try await URLSession.shared.data(for: request)
+                guard !Task.isCancelled else { return }
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let text = json["text"] as? String, !text.isEmpty {
+                    await self.confirmQwen3Segment(text)
+                }
+            } catch {
+                DebugFileLogger.log("Qwen3 speculative: failed \(error)")
+            }
+        }
+    }
+
+    private func confirmQwen3Segment(_ text: String) {
+        qwen3ConfirmedSegments.append(text)
+        qwen3ConfirmedOffset = allAudioData.count
+        qwen3LatestText = nil
+        qwen3HasPendingAudio = false
+        DebugFileLogger.log("Qwen3 speculative: confirmed segment \(qwen3ConfirmedSegments.count): \(text.count) chars")
+    }
+
+    private func resetQwen3State() {
+        allAudioData = Data()
+        qwen3ConfirmedOffset = 0
+        qwen3ConfirmedSegments = []
+        qwen3LatestText = nil
+        qwen3HasPendingAudio = false
     }
 
     // MARK: - Disconnect
