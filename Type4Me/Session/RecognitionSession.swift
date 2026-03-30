@@ -729,6 +729,10 @@ actor RecognitionSession {
     /// speculatively sending current text to LLM. If the user is still
     /// speaking, the timer resets.
     private func scheduleSpeculativeLLM() {
+        // Skip speculative LLM for local models — they're fast enough (~0.5s)
+        // and would compete for Metal GPU with local ASR.
+        guard KeychainService.selectedLLMProvider != .localQwen else { return }
+
         speculativeDebounceTask?.cancel()
         speculativeDebounceTask = Task {
             try? await Task.sleep(for: .milliseconds(800))
