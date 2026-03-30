@@ -28,3 +28,20 @@ docs/plans/
 Frameworks/
 .build-sherpa/
 .worktrees/
+
+# Python build artifacts
+__pycache__/
+*.pyc
+sensevoice-server/build/
+sensevoice-server/dist/
+qwen3-asr-server/build/
+qwen3-asr-server/dist/
+qwen3-asr-server/.venv/
+sensevoice-server/.venv/
+
+# Large model files
+sensevoice-server/models/
+
+# Test artifacts
+test-audio/
+test*.txt

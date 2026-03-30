@@ -1,48 +1,31 @@
 import Foundation
+#if canImport(AppKit)
+import AppKit
+#endif
 
-/// Stores and loads user-defined hotwords for ASR bias.
-/// One word per line in UserDefaults.
+/// Hotword storage with two independent stores:
+/// - **Built-in file** (`builtin-hotwords.json`): seeded from defaults, user-editable via Finder for bulk ops
+/// - **User file** (`hotwords.json`): managed by Settings UI, auto-loaded on save
+/// Both are merged at runtime (deduplicated, case-insensitive).
 enum HotwordStorage {
 
-    private static let key = "tf_hotwords"
-    private static let seededKey = "tf_hotwords_seeded"
+    // MARK: - File paths
 
-    /// Example hotwords seeded on first launch.
-    private static let exampleHotwords = ["claude", "claude code"]
-
-    /// Seeds example hotwords on first launch. Call once from app startup.
-    static func seedIfNeeded() {
-        guard !UserDefaults.standard.bool(forKey: seededKey) else { return }
-        if load().isEmpty {
-            save(exampleHotwords)
-        }
-        UserDefaults.standard.set(true, forKey: seededKey)
+    private static var appSupportDir: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return dir.appendingPathComponent("Type4Me")
     }
 
-    static func load() -> [String] {
-        let raw = UserDefaults.standard.string(forKey: key) ?? ""
-        return raw.components(separatedBy: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-    }
+    /// Built-in hotwords file (seeded from defaults, user-editable for bulk ops)
+    static var builtinFileURL: URL { appSupportDir.appendingPathComponent("builtin-hotwords.json") }
 
-    static func save(_ words: [String]) {
-        UserDefaults.standard.set(words.joined(separator: "\n"), forKey: key)
-    }
+    /// User hotwords file (managed by Settings UI)
+    static var userFileURL: URL { appSupportDir.appendingPathComponent("hotwords.json") }
 
-    static func loadRaw() -> String {
-        UserDefaults.standard.string(forKey: key) ?? ""
-    }
-
-    static func saveRaw(_ text: String) {
-        UserDefaults.standard.set(text, forKey: key)
-    }
-
-    // MARK: - Built-in hotwords
+    // MARK: - Default hotwords (used for initial seeding)
 
     /// Common tech terms that ASR engines frequently mis-transcribe.
-    /// Covers AI models, dev tools, programming terms, frameworks, business jargon, and daily tech.
-    static let builtinHotwords: [String] = [
+    static let defaultHotwords: [String] = [
         // ── AI models & companies ──
         "Claude", "Claude Code", "GPT", "GPT-4", "GPT-4o", "Gemini", "LLaMA", "Llama",
         "Anthropic", "OpenAI", "DeepSeek", "Qwen", "Mistral", "Cohere", "Perplexity",
@@ -78,11 +61,81 @@ enum HotwordStorage {
         "AirPods", "HomePod", "MacBook", "iPad",
     ]
 
-    /// Returns builtin + user hotwords merged (deduplicated, case-insensitive).
+    // MARK: - Initialization
+
+    private static let migratedKey = "tf_hotwords_migrated_to_file_v2"
+    private static let oldUDKey = "tf_hotwords"
+
+    /// Seeds built-in file and migrates old UserDefaults data to user file.
+    static func migrateIfNeeded() {
+        // Seed built-in file if missing
+        if !FileManager.default.fileExists(atPath: builtinFileURL.path) {
+            saveBuiltin(defaultHotwords)
+        }
+
+        guard !UserDefaults.standard.bool(forKey: migratedKey) else { return }
+        defer { UserDefaults.standard.set(true, forKey: migratedKey) }
+
+        // Migrate old UserDefaults to user file (skip if user file already exists)
+        guard !FileManager.default.fileExists(atPath: userFileURL.path) else { return }
+        let raw = UserDefaults.standard.string(forKey: oldUDKey) ?? ""
+        let oldWords = raw.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        // Filter out entries that duplicate built-in
+        let builtinSet = Set(defaultHotwords.map { $0.lowercased() })
+        let userOnly = oldWords.filter { !builtinSet.contains($0.lowercased()) }
+
+        if !userOnly.isEmpty {
+            save(userOnly)
+        }
+    }
+
+    // MARK: - User file (Settings UI)
+
+    static func load() -> [String] {
+        return readFile(userFileURL)
+    }
+
+    static func save(_ words: [String]) {
+        writeFile(words, to: userFileURL)
+        SenseVoiceServerManager.syncHotwordsAndRestart()
+    }
+
+    // MARK: - Built-in file (Finder editable)
+
+    static func loadBuiltin() -> [String] {
+        return readFile(builtinFileURL)
+    }
+
+    static func saveBuiltin(_ words: [String]) {
+        writeFile(words, to: builtinFileURL)
+        SenseVoiceServerManager.syncHotwordsAndRestart()
+    }
+
+    static func builtinCount() -> Int {
+        return loadBuiltin().count
+    }
+
+    /// Reveal built-in hotwords file in Finder.
+    static func revealBuiltinInFinder() {
+        if !FileManager.default.fileExists(atPath: builtinFileURL.path) {
+            saveBuiltin(defaultHotwords)
+        }
+        #if canImport(AppKit)
+        NSWorkspace.shared.activateFileViewerSelecting([builtinFileURL])
+        #endif
+    }
+
+    // MARK: - Effective (merge both stores)
+
+    /// Returns built-in + user hotwords merged (deduplicated, case-insensitive).
     static func loadEffective() -> [String] {
+        let builtin = loadBuiltin()
         let user = load()
-        var seen = Set(builtinHotwords.map { $0.lowercased() })
-        var result = builtinHotwords
+        var seen = Set(builtin.map { $0.lowercased() })
+        var result = builtin
         for word in user {
             let lower = word.lowercased()
             if !seen.contains(lower) {
@@ -91,5 +144,36 @@ enum HotwordStorage {
             }
         }
         return result
+    }
+
+    // MARK: - Finder
+
+    /// Reveal user hotwords file in Finder.
+    static func revealUserInFinder() {
+        let url = userFileURL
+        if !FileManager.default.fileExists(atPath: url.path) {
+            save([])
+        }
+        #if canImport(AppKit)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        #endif
+    }
+
+    // MARK: - File I/O helpers
+
+    private static func readFile(_ url: URL) -> [String] {
+        guard let data = try? Data(contentsOf: url),
+              let words = try? JSONDecoder().decode([String].self, from: data)
+        else { return [] }
+        return words
+    }
+
+    private static func writeFile(_ words: [String], to url: URL) {
+        let dir = url.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(words) else { return }
+        try? data.write(to: url, options: .atomic)
     }
 }

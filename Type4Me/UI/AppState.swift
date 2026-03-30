@@ -295,6 +295,9 @@ final class AppState {
     var availableModes: [ProcessingMode]
     var feedbackMessage: String = L("已完成", "Done")
     var processingFinishTime: Date?
+    var isQwen3OnlyMode: Bool {
+        SenseVoiceServerManager.currentPort == nil && SenseVoiceServerManager.currentQwen3Port != nil
+    }
 
     // MARK: Panel Control (not observed by SwiftUI)
 
@@ -431,7 +434,7 @@ final class AppState {
     private func showDone(message: String = L("已完成", "Done")) {
         feedbackMessage = message
         barPhase = .done
-        scheduleAutoHide(for: .done, delay: .seconds(1.5))
+        scheduleAutoHide(for: .done, delay: .seconds(0.8))
     }
 
     private func scheduleAutoHide(for phase: FloatingBarPhase, delay: Duration) {

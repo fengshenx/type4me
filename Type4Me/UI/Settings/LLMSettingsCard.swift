@@ -58,7 +58,6 @@ struct LLMSettingsCard: View, SettingsCardHelpers {
                 if selectedLLMProvider == .localQwen {
                     testButton(L("测试连接", "Test"), status: llmTestStatus) { testLLMConnection() }
                         .disabled(!LocalQwenLLMConfig.isModelAvailable)
-                    primaryButton(L("保存", "Save")) { saveLLMCredentials() }
                 } else {
                     testButton(L("测试连接", "Test"), status: llmTestStatus) { testLLMConnection() }
                         .disabled(!hasLLMCredentials)
@@ -96,71 +95,52 @@ struct LLMSettingsCard: View, SettingsCardHelpers {
         let model = LocalQwenLLMConfig.availableModel
         let modelAvailable = model != nil
         return VStack(alignment: .leading, spacing: 8) {
-            // Model status
-            HStack(spacing: 8) {
-                Image(systemName: modelAvailable ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    .foregroundStyle(modelAvailable ? TF.settingsAccentGreen : TF.settingsAccentRed)
-                    .font(.system(size: 14))
-                Text(modelAvailable
-                    ? L("模型已就绪", "Model ready")
-                    : L("模型未找到", "Model not found"))
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(TF.settingsText)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                if let model {
-                    Text("\(model.displayName)-Q4_K_M (GGUF)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(TF.settingsTextSecondary)
-                    Text(L("~\(String(format: "%.1f", model.sizeGB))GB, Metal GPU 加速, \(model.tokPerSec) tok/s",
-                           "~\(String(format: "%.1f", model.sizeGB))GB, Metal GPU, \(model.tokPerSec) tok/s"))
-                        .font(.system(size: 11))
-                        .foregroundStyle(TF.settingsTextTertiary)
-                } else {
-                    Text(L("支持 Qwen3.5-9B (推荐) 或 Qwen3-4B",
-                           "Supports Qwen3.5-9B (recommended) or Qwen3-4B"))
-                        .font(.system(size: 11))
-                        .foregroundStyle(TF.settingsTextSecondary)
-                    Text(L("请将 GGUF 模型放到 sensevoice-server/models/ 目录",
-                           "Place GGUF model in sensevoice-server/models/"))
-                        .font(.system(size: 11))
-                        .foregroundStyle(TF.settingsAccentRed.opacity(0.8))
-                }
-            }
-
-            // Server status + start button
-            if modelAvailable {
-                SettingsDivider()
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(serverRunning ? TF.settingsAccentGreen : TF.settingsAccentRed)
-                        .frame(width: 8, height: 8)
-                    Text(serverRunning
-                        ? L("推理服务运行中", "Inference server running")
-                        : L("推理服务未启动", "Inference server stopped"))
-                        .font(.system(size: 11))
-                        .foregroundStyle(TF.settingsTextSecondary)
-                    Spacer()
-                    if !serverRunning {
-                        Button {
-                            startLocalServer()
-                        } label: {
-                            if serverStarting {
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .frame(width: 60)
-                            } else {
-                                Text(L("启动", "Start"))
-                                    .font(.system(size: 11, weight: .medium))
-                                    .frame(width: 60)
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(TF.settingsAccentAmber)
-                        .controlSize(.small)
-                        .disabled(serverStarting)
+            if let model {
+                HStack(spacing: 6) {
+                    HStack(spacing: 4) {
+                        Text(model.displayName)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(TF.settingsText)
+                        Text("|")
+                            .font(.system(size: 10))
+                            .foregroundStyle(TF.settingsTextTertiary.opacity(0.5))
+                        Text(L("~\(String(format: "%.1f", model.sizeGB))GB, Metal GPU 加速", "~\(String(format: "%.1f", model.sizeGB))GB, Metal GPU"))
+                            .font(.system(size: 10))
+                            .foregroundStyle(TF.settingsTextTertiary)
                     }
+                    Spacer()
+                    if serverStarting {
+                        ProgressView().controlSize(.small)
+                    } else if serverRunning {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(TF.settingsAccentGreen)
+                            Text(L("运行中", "Running"))
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(TF.settingsAccentGreen)
+                        }
+                        Button(L("停止", "Stop")) { stopLocalServer() }
+                            .font(.system(size: 11, weight: .medium))
+                            .buttonStyle(.borderedProminent)
+                            .tint(TF.settingsAccentRed)
+                            .controlSize(.small)
+                    } else {
+                        Button(L("启动", "Start")) { startLocalServer() }
+                            .font(.system(size: 11, weight: .medium))
+                            .buttonStyle(.borderedProminent)
+                            .tint(TF.settingsAccentAmber)
+                            .controlSize(.small)
+                    }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(TF.settingsAccentRed)
+                        .font(.system(size: 12))
+                    Text(L("模型未找到，请将 GGUF 放到 sensevoice-server/models/", "Model not found, place GGUF in sensevoice-server/models/"))
+                        .font(.system(size: 11))
+                        .foregroundStyle(TF.settingsTextSecondary)
                 }
             }
         }
@@ -183,25 +163,54 @@ struct LLMSettingsCard: View, SettingsCardHelpers {
         serverStarting = true
         do {
             try await SenseVoiceServerManager.shared.start()
-            serverRunning = true
+
+            let qPort = SenseVoiceServerManager.currentQwen3Port
+            guard let port = qPort ?? SenseVoiceServerManager.currentPort else {
+                NSLog("[Settings] No server port available for LLM")
+                serverStarting = false
+                return
+            }
+
+            // Re-enable LLM loading (in case it was disabled by stop button)
+            if qPort != nil {
+                let enableURL = URL(string: "http://127.0.0.1:\(port)/llm/load")!
+                var enableReq = URLRequest(url: enableURL)
+                enableReq.httpMethod = "POST"
+                enableReq.timeoutInterval = 5
+                _ = try? await URLSession.shared.data(for: enableReq)
+            }
 
             // Trigger lazy LLM model load with a minimal request
-            if let port = SenseVoiceServerManager.currentPort {
-                let url = URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!
-                var request = URLRequest(url: url)
-                request.httpMethod = "POST"
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.timeoutInterval = 60  // Model load can take a while
-                let body = #"{"messages":[{"role":"user","content":"hi"}],"max_tokens":1}"#
-                request.httpBody = body.data(using: .utf8)
-                NSLog("[Settings] Preloading local LLM model...")
-                _ = try? await URLSession.shared.data(for: request)
-                NSLog("[Settings] Local LLM model preloaded")
-            }
+            let url = URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 60
+            let body = #"{"messages":[{"role":"user","content":"hi"}],"max_tokens":1}"#
+            request.httpBody = body.data(using: .utf8)
+            NSLog("[Settings] Preloading local LLM model...")
+            _ = try? await URLSession.shared.data(for: request)
+            NSLog("[Settings] Local LLM model preloaded")
+            serverRunning = true
         } catch {
             NSLog("[Settings] Local server start failed: %@", String(describing: error))
         }
         serverStarting = false
+    }
+
+    private func stopLocalServer() {
+        Task {
+            // Unload LLM model via HTTP to free GPU memory
+            if let port = SenseVoiceServerManager.currentQwen3Port {
+                let url = URL(string: "http://127.0.0.1:\(port)/llm/unload")!
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.timeoutInterval = 10
+                _ = try? await URLSession.shared.data(for: request)
+            }
+            serverRunning = false
+            DebugFileLogger.log("LLM unloaded via /llm/unload")
+        }
     }
 
     /// Stop server if ASR doesn't need it (user switched away from local LLM).
@@ -244,7 +253,13 @@ struct LLMSettingsCard: View, SettingsCardHelpers {
                 if newProvider == .localQwen {
                     Task { await preloadLocalLLM() }
                 } else if oldProvider == .localQwen {
-                    Task { await stopServerIfUnneeded() }
+                    // Unload LLM model; only stop Qwen3 server if ASR doesn't need it
+                    stopLocalServer()
+                    let asrNeedsQwen3 = KeychainService.selectedASRProvider == .sherpa
+                        && (UserDefaults.standard.object(forKey: "tf_qwen3FinalEnabled") as? Bool ?? true)
+                    if !asrNeedsQwen3 {
+                        Task { await SenseVoiceServerManager.shared.stopQwen3() }
+                    }
                 }
             }
         }
@@ -374,10 +389,12 @@ struct LLMSettingsCard: View, SettingsCardHelpers {
             do {
                 let llmConfig: LLMConfig
                 if provider == .localQwen {
-                    // Local Qwen uses SenseVoice server's dynamic port
-                    guard let port = SenseVoiceServerManager.currentPort else {
+                    // LLM runs on Qwen3-ASR server (shares Metal GPU lock)
+                    let port = SenseVoiceServerManager.currentQwen3Port ?? SenseVoiceServerManager.currentPort
+                    DebugFileLogger.log("LLM test: q3Port=\(SenseVoiceServerManager.currentQwen3Port ?? -1) svPort=\(SenseVoiceServerManager.currentPort ?? -1) using=\(port ?? -1)")
+                    guard let port else {
                         guard !Task.isCancelled else { return }
-                        llmTestStatus = .failed(L("SenseVoice 服务未运行", "SenseVoice server not running"))
+                        llmTestStatus = .failed(L("Qwen3 服务未运行，请先启动", "Qwen3 server not running, start it first"))
                         return
                     }
                     llmConfig = LLMConfig(apiKey: "", model: "qwen3-4b", baseURL: "http://127.0.0.1:\(port)/v1")
@@ -401,7 +418,7 @@ struct LLMSettingsCard: View, SettingsCardHelpers {
             } catch {
                 guard !Task.isCancelled else { return }
                 NSLog("[Settings] LLM test failed (%@): %@", provider.rawValue, String(describing: error))
-                llmTestStatus = .failed(L("连接失败", "Connection failed"))
+                llmTestStatus = .failed(error.localizedDescription)
             }
         }
     }

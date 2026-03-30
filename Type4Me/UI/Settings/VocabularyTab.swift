@@ -2,17 +2,19 @@ import SwiftUI
 
 struct VocabularyTab: View {
 
-    // Hotwords
+    // Hotwords (user file)
     @State private var hotwords: [String] = HotwordStorage.load()
     @State private var newHotword: String = ""
+    @State private var builtinHotwordCount: Int = HotwordStorage.builtinCount()
 
-    // Snippets
+    // Snippets (user file)
     @State private var snippets: [(trigger: String, value: String)] = SnippetStorage.load()
     @State private var editingIndex: Int? = nil
     @State private var editTrigger: String = ""
     @State private var editValue: String = ""
     @State private var newTrigger: String = ""
     @State private var newValue: String = ""
+    @State private var builtinSnippetCount: Int = SnippetStorage.builtinCount()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -33,17 +35,47 @@ struct VocabularyTab: View {
                 .foregroundStyle(TF.settingsTextTertiary)
                 .padding(.bottom, 12)
 
+            // Built-in hotwords info bar
             HStack(spacing: 6) {
-                Image(systemName: "lock.fill")
+                Image(systemName: "tray.full.fill")
                     .font(.system(size: 9))
                     .foregroundStyle(TF.settingsTextTertiary)
-                Text(L("内置 \(HotwordStorage.builtinHotwords.count) 条通用热词",
-                       "\(HotwordStorage.builtinHotwords.count) built-in hotwords"))
+                Text(L("内置 \(builtinHotwordCount) 条热词",
+                       "\(builtinHotwordCount) built-in hotwords"))
                     .font(.system(size: 11))
                     .foregroundStyle(TF.settingsTextTertiary)
+
+                Divider().frame(height: 12)
+
+                Button {
+                    HotwordStorage.revealBuiltinInFinder()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 10))
+                        Text(L("在 Finder 中打开", "Reveal in Finder"))
+                            .font(.system(size: 11))
+                    }
+                    .foregroundStyle(TF.settingsAccentBlue)
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    builtinHotwordCount = HotwordStorage.builtinCount()
+                    SenseVoiceServerManager.syncHotwordsAndRestart()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10))
+                        .foregroundStyle(TF.settingsAccentBlue)
+                }
+                .buttonStyle(.plain)
+                .help(L("重新加载内置文件", "Reload built-in file"))
+
+                Spacer()
             }
             .padding(.bottom, 8)
 
+            // User hotwords
             WrappingHStack(spacing: 6) {
                 ForEach(hotwords, id: \.self) { word in
                     hotwordTag(word)
@@ -83,14 +115,42 @@ struct VocabularyTab: View {
                 .foregroundStyle(TF.settingsTextTertiary)
                 .padding(.bottom, 12)
 
+            // Built-in snippets info bar
             HStack(spacing: 6) {
-                Image(systemName: "lock.fill")
+                Image(systemName: "tray.full.fill")
                     .font(.system(size: 9))
                     .foregroundStyle(TF.settingsTextTertiary)
-                Text(L("内置 \(SnippetStorage.builtinSnippets.count) 条纠正规则",
-                       "\(SnippetStorage.builtinSnippets.count) built-in correction rules"))
+                Text(L("内置 \(builtinSnippetCount) 条纠正规则",
+                       "\(builtinSnippetCount) built-in correction rules"))
                     .font(.system(size: 11))
                     .foregroundStyle(TF.settingsTextTertiary)
+
+                Divider().frame(height: 12)
+
+                Button {
+                    SnippetStorage.revealBuiltinInFinder()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 10))
+                        Text(L("在 Finder 中打开", "Reveal in Finder"))
+                            .font(.system(size: 11))
+                    }
+                    .foregroundStyle(TF.settingsAccentBlue)
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    builtinSnippetCount = SnippetStorage.builtinCount()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10))
+                        .foregroundStyle(TF.settingsAccentBlue)
+                }
+                .buttonStyle(.plain)
+                .help(L("重新加载内置文件", "Reload built-in file"))
+
+                Spacer()
             }
             .padding(.bottom, 8)
 
@@ -107,7 +167,7 @@ struct VocabularyTab: View {
             }
             .padding(.bottom, 4)
 
-            // Existing snippets
+            // Existing user snippets
             ForEach(Array(snippets.enumerated()), id: \.offset) { index, snippet in
                 snippetRow(index: index, trigger: snippet.trigger, value: snippet.value)
                 if index < snippets.count - 1 {
@@ -165,6 +225,8 @@ struct VocabularyTab: View {
         .onAppear {
             hotwords = HotwordStorage.load()
             snippets = SnippetStorage.load()
+            builtinHotwordCount = HotwordStorage.builtinCount()
+            builtinSnippetCount = SnippetStorage.builtinCount()
         }
     }
 

@@ -20,7 +20,11 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
     // Local model states
     @State private var localModelAvailable: Bool = ModelManager.isSenseVoiceBundled
     @State private var serverRunning = false
-    @State private var serverStarting = false
+    @State private var qwen3Running = false
+    @State private var svToggling = false
+    @State private var qwen3Toggling = false
+    @AppStorage("tf_qwen3FinalEnabled") private var qwen3FinalEnabled = true
+    @AppStorage("tf_sensevoiceEnabled") private var sensevoiceEnabled = true
 
     private var currentASRFields: [CredentialField] {
         ASRProviderRegistry.configType(for: selectedASRProvider)?.credentialFields ?? []
@@ -165,27 +169,42 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
                         .filter { $0.isLocal || (ASRProviderRegistry.entry(for: $0)?.isAvailable ?? false) }
                         .map { ($0.rawValue, $0.displayName) }
                 )
-                if selectedASRProvider.isLocal && localModelAvailable {
-                    testButton(L("测试模型", "Test Model"), status: asrTestStatus) { testLocalModel() }
-                }
             }
         }
         .padding(.vertical, 6)
         .onChange(of: selectedASRProvider) { oldProvider, newProvider in
+            // Skip if this is the initial load (oldProvider is the @State default, not a real switch)
+            guard oldProvider == KeychainService.selectedASRProvider || oldProvider == newProvider else {
+                // Initial load: just sync credentials, don't start/stop servers
+                loadASRCredentialsForProvider(newProvider)
+                refreshModelStatus()
+                return
+            }
+
             testTask?.cancel()
             asrTestStatus = .idle
             isEditingASR = true
-            // Persist provider switch immediately (don't require a separate "save")
             KeychainService.selectedASRProvider = newProvider
             loadASRCredentialsForProvider(newProvider)
             refreshModelStatus()
-            // Stop SenseVoice server when switching away from sherpa
+            // Stop servers when switching away from local ASR
             if oldProvider == .sherpa && newProvider != .sherpa {
-                Task { await SenseVoiceServerManager.shared.stop() }
+                Task {
+                    let mgr = SenseVoiceServerManager.shared
+                    await mgr.stopSenseVoice()
+                    serverRunning = false
+                    let llmNeedsQwen3 = KeychainService.selectedLLMProvider == .localQwen
+                    if !llmNeedsQwen3 {
+                        await mgr.stopQwen3()
+                        qwen3Running = false
+                    }
+                }
             }
-            // Start SenseVoice server when switching to sherpa
+            // Start both servers when user explicitly switches to local ASR
             if newProvider == .sherpa {
-                Task { try? await SenseVoiceServerManager.shared.start() }
+                sensevoiceEnabled = true
+                qwen3FinalEnabled = true
+                startServer()
             }
         }
     }
@@ -253,9 +272,8 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
 
     // MARK: - Local Model Section
 
-    /// Detect which local ASR model is actually configured by checking server directories.
-    private var isQwen3ASR: Bool {
-        // Qwen3-ASR server exists (dev or bundled)
+    /// Whether Qwen3-ASR server is available (dev or bundled).
+    private var hasQwen3ASR: Bool {
         let home = NSHomeDirectory()
         let devQwen3 = (home as NSString).appendingPathComponent("projects/type4me/qwen3-asr-server/server.py")
         if FileManager.default.fileExists(atPath: devQwen3) { return true }
@@ -266,57 +284,97 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
         return false
     }
 
-    private var localASRModelName: String {
-        isQwen3ASR ? "Qwen3-ASR (MLX)" : "SenseVoice (ONNX)"
-    }
-
-    private var localASRModelDescription: String {
-        isQwen3ASR
-            ? L("阿里 Qwen3 语音模型，Metal GPU 加速，支持中英",
-                 "Alibaba Qwen3 ASR, Metal GPU accelerated, zh/en")
-            : L("阿里开源语音模型，支持中英粤日韩，自动标点，流式识别",
-                 "Alibaba open-source ASR, zh/en/yue/ja/ko, auto punctuation, streaming")
-    }
-
     private var localModelSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             if localModelAvailable {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(TF.settingsAccentGreen)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(localASRModelName)
-                            .font(.system(size: 13, weight: .medium))
+                // SenseVoice row
+                HStack(spacing: 6) {
+                    HStack(spacing: 4) {
+                        Text("SenseVoice")
+                            .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(TF.settingsText)
-                        Text(localASRModelDescription)
+                        Text("|")
                             .font(.system(size: 10))
-                            .foregroundStyle(TF.settingsTextSecondary)
+                            .foregroundStyle(TF.settingsTextTertiary.opacity(0.5))
+                        Text(L("基础识别模型，流式识别，支持实时展示", "Base model, streaming ASR, real-time display"))
+                            .font(.system(size: 10))
+                            .foregroundStyle(TF.settingsTextTertiary)
+                    }
+                    Spacer()
+                    if svToggling {
+                        ProgressView().controlSize(.small)
+                    } else if serverRunning {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(TF.settingsAccentGreen)
+                            Text(L("运行中", "Running"))
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(TF.settingsAccentGreen)
+                        }
+                        Button(L("停止", "Stop")) { toggleSenseVoice(false) }
+                            .font(.system(size: 11, weight: .medium))
+                            .buttonStyle(.borderedProminent)
+                            .tint(TF.settingsAccentRed)
+                            .controlSize(.small)
+                    } else {
+                        Button(L("启动", "Start")) { toggleSenseVoice(true) }
+                            .font(.system(size: 11, weight: .medium))
+                            .buttonStyle(.borderedProminent)
+                            .tint(TF.settingsAccentAmber)
+                            .controlSize(.small)
                     }
                 }
 
-                // Inline server status
-                SettingsDivider()
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(serverRunning ? TF.settingsAccentGreen : TF.settingsAccentRed)
-                        .frame(width: 8, height: 8)
-                    Text(serverRunning
-                        ? L("推理服务运行中", "Server running")
-                        : L("推理服务未启动", "Server stopped"))
-                        .font(.system(size: 11))
-                        .foregroundStyle(TF.settingsTextSecondary)
-                    Spacer()
-                    if !serverRunning && !serverStarting {
-                        Button(L("启动", "Start")) {
-                            startServer()
+                // Qwen3-ASR row (Apple Silicon only)
+                #if arch(arm64)
+                if hasQwen3ASR {
+                    SettingsDivider()
+                    HStack(spacing: 6) {
+                        HStack(spacing: 4) {
+                            Text("Qwen3-ASR")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(TF.settingsText)
+                            Text("|")
+                                .font(.system(size: 10))
+                                .foregroundStyle(TF.settingsTextTertiary.opacity(0.5))
+                            Text(L("精准校验，建议搭配 SenseVoice", "Verification, best with SenseVoice"))
+                                .font(.system(size: 10))
+                                .foregroundStyle(TF.settingsTextTertiary)
                         }
-                        .font(.system(size: 11, weight: .medium))
-                        .buttonStyle(.borderedProminent)
-                        .tint(TF.settingsAccentAmber)
-                        .controlSize(.small)
-                    } else if serverStarting {
-                        ProgressView().controlSize(.small)
+                        Spacer()
+                        if qwen3Toggling {
+                            ProgressView().controlSize(.small)
+                        } else if qwen3Running {
+                            HStack(spacing: 4) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(TF.settingsAccentGreen)
+                                Text(L("运行中", "Running"))
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(TF.settingsAccentGreen)
+                            }
+                            Button(L("停止", "Stop")) { toggleQwen3(false) }
+                                .font(.system(size: 11, weight: .medium))
+                                .buttonStyle(.borderedProminent)
+                                .tint(TF.settingsAccentRed)
+                                .controlSize(.small)
+                        } else {
+                            Button(L("启动", "Start")) { toggleQwen3(true) }
+                                .font(.system(size: 11, weight: .medium))
+                                .buttonStyle(.borderedProminent)
+                                .tint(TF.settingsAccentAmber)
+                                .controlSize(.small)
+                        }
                     }
+                }
+                #endif
+
+                // Test button at bottom
+                SettingsDivider()
+                HStack {
+                    Spacer()
+                    testButton(L("测试连接", "Test"), status: asrTestStatus) { testLocalModel() }
                 }
             } else {
                 // Lite version: no model bundled
@@ -343,19 +401,70 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
 
     private func refreshModelStatus() {
         localModelAvailable = ModelManager.isSenseVoiceBundled
-        Task { serverRunning = await SenseVoiceServerManager.shared.isRunning }
+        Task {
+            let mgr = SenseVoiceServerManager.shared
+            serverRunning = await mgr.isRunning
+            qwen3Running = await mgr.qwen3Port != nil
+        }
     }
 
     private func startServer() {
-        serverStarting = true
+        // Called by start() flow or provider switch - starts both if enabled
+        svToggling = true
+        qwen3Toggling = hasQwen3ASR && qwen3FinalEnabled
         Task {
+            let mgr = SenseVoiceServerManager.shared
             do {
-                try await SenseVoiceServerManager.shared.start()
-                serverRunning = true
+                try await mgr.start()
+                serverRunning = await mgr.isRunning
+                qwen3Running = await mgr.qwen3Port != nil
             } catch {
                 NSLog("[ASRSettings] Server start failed: %@", String(describing: error))
             }
-            serverStarting = false
+            svToggling = false
+            qwen3Toggling = false
+        }
+    }
+
+    private func toggleSenseVoice(_ enabled: Bool) {
+        sensevoiceEnabled = enabled
+        svToggling = true
+        Task {
+            let mgr = SenseVoiceServerManager.shared
+            if enabled {
+                do {
+                    try await mgr.startSenseVoice()
+                    serverRunning = await mgr.isRunning
+                } catch {
+                    NSLog("[ASRSettings] SenseVoice start failed: %@", String(describing: error))
+                    sensevoiceEnabled = false
+                }
+            } else {
+                await mgr.stopSenseVoice()
+                serverRunning = false
+            }
+            svToggling = false
+        }
+    }
+
+    private func toggleQwen3(_ enabled: Bool) {
+        qwen3FinalEnabled = enabled
+        qwen3Toggling = true
+        Task {
+            let mgr = SenseVoiceServerManager.shared
+            if enabled {
+                do {
+                    try await mgr.startQwen3()
+                    qwen3Running = await mgr.qwen3Port != nil
+                } catch {
+                    NSLog("[ASRSettings] Qwen3 start failed: %@", String(describing: error))
+                    qwen3FinalEnabled = false
+                }
+            } else {
+                await mgr.stopQwen3()
+                qwen3Running = false
+            }
+            qwen3Toggling = false
         }
     }
 
@@ -363,23 +472,29 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
         testTask?.cancel()
         asrTestStatus = .testing
         testTask = Task {
-            do {
-                // Ensure server is running
-                let running = await SenseVoiceServerManager.shared.isRunning
-                if !running {
-                    try await SenseVoiceServerManager.shared.start()
-                }
-                // Health check
-                let healthy = await SenseVoiceServerManager.shared.isHealthy()
-                guard !Task.isCancelled else { return }
-                if healthy {
-                    asrTestStatus = .success
+            let mgr = SenseVoiceServerManager.shared
+            guard !Task.isCancelled else { return }
+
+            let svHealthy = await mgr.isHealthy()
+            var qwen3Healthy = false
+            if let qp = await mgr.qwen3Port {
+                let url = URL(string: "http://127.0.0.1:\(qp)/health")!
+                qwen3Healthy = (try? await URLSession.shared.data(from: url)).map {
+                    ($0.1 as? HTTPURLResponse)?.statusCode == 200
+                } ?? false
+            }
+            guard !Task.isCancelled else { return }
+
+            if svHealthy || qwen3Healthy {
+                asrTestStatus = .success
+            } else {
+                let svPort = SenseVoiceServerManager.currentPort
+                let q3Port = SenseVoiceServerManager.currentQwen3Port
+                if svPort == nil && q3Port == nil {
+                    asrTestStatus = .failed(L("服务未启动", "No server running"))
                 } else {
-                    asrTestStatus = .failed(L("服务未就绪", "Server not ready"))
+                    asrTestStatus = .failed(L("服务未就绪，请稍候重试", "Server not ready, try again"))
                 }
-            } catch {
-                guard !Task.isCancelled else { return }
-                asrTestStatus = .failed(error.localizedDescription)
             }
         }
     }

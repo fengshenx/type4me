@@ -3,16 +3,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-SERVER_DIR="$PROJECT_DIR/sensevoice-server"
+SERVER_DIR="$PROJECT_DIR/qwen3-asr-server"
 
-echo "=== Building sensevoice-server standalone binary ==="
+echo "=== Building qwen3-asr-server standalone binary ==="
 
 cd "$SERVER_DIR"
 
-# Ensure venv exists
+# Ensure venv exists (use python3.14 for MLX compatibility)
 if [ ! -d .venv ]; then
     echo "Creating venv..."
-    /opt/homebrew/bin/python3.12 -m venv .venv
+    /opt/homebrew/bin/python3.14 -m venv .venv
 fi
 
 source .venv/bin/activate
@@ -23,23 +23,19 @@ pip install -q -r requirements.txt
 pip install -q pyinstaller
 
 # Clean previous build
-rm -rf build dist *.spec
+rm -rf build dist
 
 # Build standalone binary
 echo "Running PyInstaller..."
 pyinstaller \
     --onedir \
-    --name sensevoice-server \
-    --hidden-import=funasr \
-    --hidden-import=funasr.models \
-    --hidden-import=asr_decoder \
-    --hidden-import=asr_decoder.ctc_decoder \
-    --hidden-import=asr_decoder.context_graph \
-    --hidden-import=online_fbank \
-    --hidden-import=pysilero \
-    --hidden-import=sentencepiece \
-    --hidden-import=torch \
-    --hidden-import=torchaudio \
+    --name qwen3-asr-server \
+    --hidden-import=mlx \
+    --hidden-import=mlx.core \
+    --hidden-import=mlx.nn \
+    --hidden-import=mlx_qwen3_asr \
+    --hidden-import=llama_cpp \
+    --hidden-import=numpy \
     --hidden-import=soundfile \
     --hidden-import=uvicorn \
     --hidden-import=uvicorn.logging \
@@ -52,20 +48,22 @@ pyinstaller \
     --hidden-import=uvicorn.protocols.websockets.auto \
     --hidden-import=uvicorn.lifespan \
     --hidden-import=uvicorn.lifespan.on \
-    --hidden-import=email_validator \
-    --collect-all funasr \
-    --collect-all asr_decoder \
-    --collect-all online_fbank \
-    --collect-all email_validator \
+    --hidden-import=fastapi \
+    --hidden-import=starlette \
+    --hidden-import=starlette.routing \
+    --hidden-import=starlette.middleware \
+    --collect-all mlx \
+    --collect-all mlx_qwen3_asr \
+    --collect-all llama_cpp \
     --noconfirm \
     server.py
 
 echo ""
 echo "=== Signing binaries for macOS Gatekeeper ==="
-DIST="$SERVER_DIR/dist/sensevoice-server"
+DIST="$SERVER_DIR/dist/qwen3-asr-server"
 # Ad-hoc sign all executables and dylibs to avoid Gatekeeper blocking
-find "$DIST" -type f \( -name "*.dylib" -o -name "*.so" -o -perm +111 \) -exec codesign --force --sign - {} \; 2>/dev/null || true
-codesign --force --sign - "$DIST/sensevoice-server" 2>/dev/null || true
+find "$DIST" -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.metallib" -o -perm +111 \) -exec codesign --force --sign - {} \; 2>/dev/null || true
+codesign --force --sign - "$DIST/qwen3-asr-server" 2>/dev/null || true
 echo "Signing complete."
 
 echo ""
@@ -74,4 +72,4 @@ echo "Output: $DIST"
 du -sh "$DIST" 2>/dev/null || true
 echo ""
 echo "Test with:"
-echo "  $DIST/sensevoice-server --model-dir iic/SenseVoiceSmall --port 8765"
+echo "  $DIST/qwen3-asr-server --model-path <path-to-qwen3-asr-model> --port 8766"

@@ -7,6 +7,49 @@ import os
 actor SenseVoiceServerManager {
     static let shared = SenseVoiceServerManager()
 
+    /// Synchronous kill of all server processes. Safe to call from applicationWillTerminate.
+    /// Reads PIDs from disk file, only kills processes we spawned.
+    nonisolated static func killAllServerProcesses() {
+        if let content = try? String(contentsOf: pidFileURL, encoding: .utf8) {
+            for line in content.split(separator: "\n") {
+                if let pid = Int32(line.trimmingCharacters(in: .whitespaces)), pid > 0 {
+                    kill(pid, SIGTERM)
+                }
+            }
+        }
+        clearPidFile()
+        currentPort = nil
+        currentQwen3Port = nil
+    }
+
+    /// Write effective hotwords (builtin + user) to hotwords.txt for Python servers.
+    /// Called from non-actor context (HotwordStorage.save, etc).
+    nonisolated static func syncHotwordsFile() {
+        let words = HotwordStorage.loadEffective()
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = appSupport.appendingPathComponent("Type4Me")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let path = dir.appendingPathComponent("hotwords.txt")
+        let content = words.joined(separator: "\n")
+        try? content.write(to: path, atomically: true, encoding: .utf8)
+        DebugFileLogger.log("Synced \(words.count) hotwords to hotwords.txt")
+    }
+
+    /// Sync hotwords and restart running servers to pick up changes.
+    nonisolated static func syncHotwordsAndRestart() {
+        syncHotwordsFile()
+        Task {
+            let mgr = shared
+            let svWasRunning = await mgr.isRunning
+            let q3WasRunning = await mgr.qwen3Port != nil
+            if svWasRunning || q3WasRunning {
+                await mgr.stop()
+                try? await mgr.start()
+                DebugFileLogger.log("Servers restarted for hotword update")
+            }
+        }
+    }
+
     /// Whether this Mac has Apple Silicon (ARM64).
     private static let isAppleSilicon: Bool = {
         #if arch(arm64)
@@ -51,39 +94,36 @@ actor SenseVoiceServerManager {
         return URL(string: "ws://127.0.0.1:\(qwen3Port)/ws")
     }
 
-    /// Start the local ASR server(s).
-    /// Apple Silicon: SenseVoice (streaming) + Qwen3-ASR (speculative final).
-    /// Intel: SenseVoice only (handles both streaming + final).
+    /// Called once at app launch. Kills orphans, then starts enabled servers.
     func start() async throws {
-        guard !isRunning else {
-            logger.info("Server already running on port \(self.port ?? 0)")
-            return
-        }
-
-        // Kill any orphaned server processes from previous app runs
         killOrphanedServers()
+        Self.syncHotwordsFile()
 
-        // On Apple Silicon, kick off Qwen3-ASR early so it loads in parallel with SenseVoice.
-        // The Task runs on the same actor but interleaves at await suspension points,
-        // while actual port reading happens on DispatchQueue.global() truly in parallel.
+        let svEnabled = UserDefaults.standard.object(forKey: "tf_sensevoiceEnabled") as? Bool ?? true
+        let qwen3Enabled = UserDefaults.standard.object(forKey: "tf_qwen3FinalEnabled") as? Bool ?? true
+
+        DebugFileLogger.log("start(): sv=\(svEnabled) q3=\(qwen3Enabled)")
+
+        // Launch enabled servers in parallel
         var qwen3Task: Task<Void, Error>?
-        if Self.isAppleSilicon {
+        if Self.isAppleSilicon && qwen3Enabled && qwen3Process == nil {
             qwen3Task = Task { try await self.launchQwen3Server() }
         }
 
-        // SenseVoice is always the primary server (streaming partials + fallback final)
-        try await launchSenseVoiceServer()
+        if svEnabled && process == nil {
+            try await launchSenseVoiceServer()
+        }
 
-        // Wait for Qwen3 if started
         if let qwen3Task {
             do {
                 try await qwen3Task.value
             } catch {
-                // Graceful degradation: Qwen3 failure is not fatal, SenseVoice handles everything
-                logger.warning("Qwen3-ASR server failed to start, falling back to SenseVoice-only: \(error)")
-                DebugFileLogger.log("Qwen3-ASR launch failed: \(error). SenseVoice-only mode.")
+                logger.warning("Qwen3-ASR failed to start: \(error)")
+                DebugFileLogger.log("Qwen3-ASR launch failed: \(error)")
             }
         }
+
+        DebugFileLogger.log("start() done: svPort=\(Self.currentPort ?? -1) q3Port=\(Self.currentQwen3Port ?? -1)")
     }
 
     /// Launch the SenseVoice server as the primary streaming server.
@@ -139,6 +179,7 @@ actor SenseVoiceServerManager {
         if !healthy {
             logger.warning("SenseVoice server started but health check not responding yet")
         }
+        savePidsToFile()
     }
 
     /// Launch the Qwen3-ASR server as secondary (speculative final + LLM).
@@ -202,6 +243,48 @@ actor SenseVoiceServerManager {
         if !healthy {
             logger.warning("Qwen3-ASR server started but health check not responding yet")
         }
+        savePidsToFile()
+    }
+
+    /// Start the Qwen3-ASR server independently (e.g. when user enables verification).
+    /// Start the SenseVoice server independently.
+    func startSenseVoice() async throws {
+        guard process == nil else { return }
+        try await launchSenseVoiceServer()
+    }
+
+    /// Stop the SenseVoice server independently.
+    func stopSenseVoice() {
+        if let proc = process, proc.isRunning {
+            proc.terminate()
+        }
+        process = nil
+        port = nil
+        Self.currentPort = nil
+        stdoutPipe = nil
+        logger.info("SenseVoice server stopped")
+        DebugFileLogger.log("SenseVoice server stopped (user toggle)")
+        savePidsToFile()
+    }
+
+    /// Start the Qwen3-ASR server independently.
+    func startQwen3() async throws {
+        guard qwen3Process == nil else { return }
+        try await launchQwen3Server()
+    }
+
+    /// Stop the Qwen3-ASR server independently (e.g. when user disables verification).
+    func stopQwen3() {
+        if let proc = qwen3Process, proc.isRunning {
+            proc.terminate()
+        }
+        qwen3Process = nil
+        qwen3Port = nil
+        Self.currentQwen3Port = nil
+        qwen3StdoutPipe = nil
+        logger.info("Qwen3-ASR server stopped")
+        DebugFileLogger.log("Qwen3-ASR server stopped (user toggle)")
+        savePidsToFile()
     }
 
     /// Stop all server processes.
@@ -223,34 +306,41 @@ actor SenseVoiceServerManager {
         qwen3StdoutPipe = nil
 
         logger.info("All ASR servers stopped")
+        savePidsToFile()  // Update (clear) PID file
     }
 
-    /// Kill orphaned server processes from previous app runs.
-    /// When Type4Me is force-killed or crashes, child server processes survive as orphans.
-    /// Each holds ~1-2GB Metal GPU memory, so cleaning them up is critical.
+    // MARK: - PID File Management
+
+    private static var pidFileURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return dir.appendingPathComponent("Type4Me/server-pids.txt")
+    }
+
+    /// Save current managed PIDs to disk so we can clean up after a crash.
+    private func savePidsToFile() {
+        var pids: [String] = []
+        if let p = process, p.isRunning { pids.append(String(p.processIdentifier)) }
+        if let p = qwen3Process, p.isRunning { pids.append(String(p.processIdentifier)) }
+        try? pids.joined(separator: "\n").write(to: Self.pidFileURL, atomically: true, encoding: .utf8)
+    }
+
+    private static func clearPidFile() {
+        try? FileManager.default.removeItem(at: pidFileURL)
+    }
+
+    /// Kill orphaned server processes from previous app runs using saved PID file.
+    /// Only kills PIDs we previously spawned, never touches other users' processes.
     private func killOrphanedServers() {
-        let scriptNames = ["sensevoice-server/server.py", "qwen3-asr-server/server.py"]
-        for name in scriptNames {
-            let pipe = Pipe()
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-            proc.arguments = ["-f", name]
-            proc.standardOutput = pipe
-            proc.standardError = FileHandle.nullDevice
-            try? proc.run()
-            proc.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let output = String(data: data, encoding: .utf8), !output.isEmpty else { continue }
-
-            for line in output.split(separator: "\n") {
-                if let pid = Int32(line.trimmingCharacters(in: .whitespaces)) {
-                    kill(pid, SIGTERM)
-                    logger.info("Killed orphaned server process PID \(pid) (\(name))")
-                    DebugFileLogger.log("Killed orphaned server PID \(pid) (\(name))")
-                }
+        guard let content = try? String(contentsOf: Self.pidFileURL, encoding: .utf8) else { return }
+        for line in content.split(separator: "\n") {
+            guard let pid = Int32(line.trimmingCharacters(in: .whitespaces)), pid > 0 else { continue }
+            // Verify process is still alive before killing
+            if kill(pid, 0) == 0 {
+                kill(pid, SIGTERM)
+                DebugFileLogger.log("Killed orphaned server PID \(pid)")
             }
         }
+        Self.clearPidFile()
     }
 
     /// Check if the server is healthy.

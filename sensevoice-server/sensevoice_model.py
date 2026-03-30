@@ -1034,7 +1034,7 @@ class StreamingSenseVoice:
         )
         self.query = torch.cat((language, event_emo, textnorm), dim=1)
         # features
-        cmvn = load_cmvn(kwargs["frontend_conf"]["cmvn_file"]).numpy()
+        cmvn = load_cmvn(kwargs["frontend_conf"]["cmvn_file"]).detach().numpy()
         self.neg_mean, self.inv_stddev = cmvn[0, :], cmvn[1, :]
         self.fbank = OnlineFbank(window_type="hamming")
         # decoder
@@ -1123,7 +1123,7 @@ class StreamingSenseVoice:
             speech_lengths += 4
             with torch.no_grad():
                 encoder_out, _ = self.model.encoder(speech, speech_lengths)
-            logits = self.model.ctc.log_softmax(encoder_out)[0, 4:].numpy()
+            logits = self.model.ctc.log_softmax(encoder_out)[0, 4:].detach().numpy()
 
         # Decode: beam search (with hotword biasing) or greedy
         if self.beam_size > 1:
@@ -1155,7 +1155,7 @@ class StreamingSenseVoice:
 
     def inference(self, speech):
         if self._onnx_session is not None:
-            x = speech.numpy()[np.newaxis, :, :]
+            x = speech.detach().numpy()[np.newaxis, :, :]
             x_length = np.array([x.shape[1]], dtype=np.int32)
             language = np.array([self._language_id], dtype=np.int32)
             text_norm = np.array([self._textnorm_id], dtype=np.int32)

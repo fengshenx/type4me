@@ -25,7 +25,7 @@ enum ASRProvider: String, CaseIterable, Codable, Sendable {
 
     var displayName: String {
         switch self {
-        case .sherpa:   return L("本地识别 (SenseVoice)", "Local (SenseVoice)")
+        case .sherpa:   return L("本地识别", "Local ASR")
         case .openai:   return "OpenAI"
         case .azure:    return "Azure Speech"
         case .google:   return "Google Cloud STT"

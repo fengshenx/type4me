@@ -12,6 +12,8 @@ protocol FloatingBarState: AnyObject, Observable {
     var processingFinishTime: Date? { get }
     var transcriptionText: String { get }
     var recordingStartDate: Date? { get }
+    /// True when recording without SenseVoice streaming (Qwen3-only).
+    var isQwen3OnlyMode: Bool { get }
 }
 
 /// Dark-themed floating transcription bar with smooth morphing between states.
@@ -19,24 +21,27 @@ protocol FloatingBarState: AnyObject, Observable {
 /// Design: single capsule container that animates width + content transitions.
 /// - Recording: audio-reactive dot + live text + timer, breathing border
 /// - Processing: rotating orb with breathing glow + "AI" badge
-/// - Done: bouncing green dot with ripple + "OK" badge
+/// - Done: full progress bar + centered text
 struct FloatingBarView<S: FloatingBarState>: View {
 
     let state: S
 
     @State private var breathe = false
     @State private var doneGlow = true
-    @State private var doneAppeared = false
-    @State private var doneRipple = false
     /// High-water mark: only grows during recording, never shrinks (prevents ASR correction jitter)
     @State private var recordingPeakWidth: CGFloat = TF.barHeight
+    @State private var processingStartDate: Date?
+    @State private var doneStartDate: Date?
 
     private var capsuleWidth: CGFloat {
         switch state.barPhase {
         case .preparing:
             return TF.barHeight
         case .recording:
-            return state.segments.isEmpty ? TF.barHeight : recordingPeakWidth
+            if state.segments.isEmpty {
+                return state.isQwen3OnlyMode ? 110 : TF.barHeight
+            }
+            return recordingPeakWidth
         case .processing:
             return measureText(state.currentMode.processingLabel) + 66.0
         case .done:
@@ -153,7 +158,11 @@ struct FloatingBarView<S: FloatingBarState>: View {
 
             // Module 2: text container (fills remaining space, grows with frame)
             // Uses overlay so text sizing never affects HStack layout
-            if !state.segments.isEmpty {
+            if state.segments.isEmpty && state.isQwen3OnlyMode {
+                Text(L("录音中", "Recording"))
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.white)
+            } else if !state.segments.isEmpty {
                 Color.clear
                     .overlay(alignment: .trailing) {
                         Text(state.transcriptionText)
@@ -195,14 +204,12 @@ struct FloatingBarView<S: FloatingBarState>: View {
     }
 
     private var doneContent: some View {
-        HStack(spacing: 10) {
-            DoneDot(appeared: doneAppeared, ripple: doneRipple)
-
+        ZStack {
             Text(state.feedbackMessage)
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.white)
         }
-        .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity)
     }
 
     private var errorContent: some View {
@@ -228,16 +235,11 @@ struct FloatingBarView<S: FloatingBarState>: View {
                     .transition(.opacity)
             }
 
-            if state.barPhase == .processing {
-                ProcessingProgress(finishTime: state.processingFinishTime)
-                    .transition(.opacity)
-            }
-
-            if state.barPhase == .done {
-                LinearGradient(
-                    colors: [TF.success.opacity(0.18), .clear],
-                    startPoint: .leading,
-                    endPoint: UnitPoint(x: 0.45, y: 0.5)
+            if state.barPhase == .processing || state.barPhase == .done {
+                ProcessingProgress(
+                    finishTime: state.processingFinishTime,
+                    processingStartDate: processingStartDate,
+                    doneStartDate: doneStartDate
                 )
                 .transition(.opacity)
             }
@@ -281,6 +283,8 @@ struct FloatingBarView<S: FloatingBarState>: View {
         switch phase {
         case .preparing:
             recordingPeakWidth = TF.barHeight
+            processingStartDate = nil
+            doneStartDate = nil
             breathe = false
             withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
                 breathe = true
@@ -291,19 +295,18 @@ struct FloatingBarView<S: FloatingBarState>: View {
             withAnimation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true)) {
                 breathe = true
             }
+        case .processing:
+            processingStartDate = Date()
+            doneStartDate = nil
+            breathe = false
         case .done:
+            doneStartDate = Date()
             breathe = false
             doneGlow = true
-            doneAppeared = false
-            doneRipple = false
-            withAnimation(TF.springBouncy) { doneAppeared = true }
-            withAnimation(.easeOut(duration: 0.8)) { doneRipple = true }
             withAnimation(.easeOut(duration: 1.0)) { doneGlow = false }
         case .error:
             breathe = false
             doneGlow = false
-            doneAppeared = false
-            doneRipple = false
         default:
             breathe = false
         }
@@ -440,32 +443,6 @@ struct ProcessingOrb: View {
     }
 }
 
-// MARK: - Done Dot
-
-/// Green dot with a bounce-in + expanding ripple ring.
-struct DoneDot: View {
-
-    let appeared: Bool
-    let ripple: Bool
-
-    var body: some View {
-        ZStack {
-            // Ripple ring: expands outward and fades
-            Circle()
-                .stroke(TF.success.opacity(ripple ? 0 : 0.5), lineWidth: 1.5)
-                .frame(width: ripple ? 26 : 12, height: ripple ? 26 : 12)
-
-            // Core dot with spring bounce
-            Circle()
-                .fill(TF.success)
-                .frame(width: 12, height: 12)
-                .scaleEffect(appeared ? 1.0 : 0.3)
-                .shadow(color: TF.success.opacity(appeared ? 0.6 : 0), radius: appeared ? 8 : 0)
-        }
-        .frame(width: 24, height: 24)
-    }
-}
-
 struct ErrorDot: View {
 
     var body: some View {
@@ -503,33 +480,44 @@ struct RecordingTimer: View {
 // MARK: - Processing Progress
 
 /// Particle progress bar: fills left→right to 90% in 1.5s, then waits.
-/// When processingFinishTime is set, sprints to 100% in 0.3s.
+/// When processingFinishTime is set, sprints toward 100% in 0.3s.
+/// When doneStartDate is set, fills remaining gap to 100% in 0.3s.
+/// All timing comes from parent — no @State, so view recreation is harmless.
 struct ProcessingProgress: View {
 
     let finishTime: Date?
-    @State private var startTime: Double = 0
+    var processingStartDate: Date?
+    var doneStartDate: Date?
 
     var body: some View {
         TimelineView(.animation) { timeline in
             let time = timeline.date.timeIntervalSinceReferenceDate
             Canvas { context, size in
-                if startTime == 0 { DispatchQueue.main.async { startTime = time } }
-                let elapsed = time - startTime
+                let startRef = processingStartDate?.timeIntervalSinceReferenceDate ?? time
+                let elapsed = time - startRef
 
-                let progress: CGFloat
+                // Cruise: 0% → 90% in 1.5s (ease-out)
+                var progress: CGFloat
                 if let finishTime {
-                    // Sprint phase: 90% → 100% in 0.3s
                     let finishElapsed = time - finishTime.timeIntervalSinceReferenceDate
                     let sprintProgress = min(1.0, CGFloat(finishElapsed / 0.3))
                     let baseProgress = min(0.9, CGFloat(elapsed / 1.5) * 0.9)
                     progress = baseProgress + (1.0 - baseProgress) * sprintProgress
                 } else {
-                    // Cruise phase: 0% → 90% in 1.5s with ease-out, then hold
                     let t = min(1.0, CGFloat(elapsed / 1.5))
-                    progress = t * 0.9 * (2.0 - t) // quadratic ease-out
+                    progress = t * 0.9 * (2.0 - t)
                 }
 
-                let fillEdge = progress * size.width
+                // Done: floor at 90% (processing end), fill to 100% in 0.15s
+                if let doneStartDate {
+                    let doneElapsed = time - doneStartDate.timeIntervalSinceReferenceDate
+                    let doneT = min(1.0, CGFloat(doneElapsed / 0.15))
+                    let base = max(progress, 0.9)
+                    progress = base + (1.0 - base) * doneT
+                }
+
+                // Push soft leading edge past visible boundary when full
+                let fillEdge = progress * size.width + (progress >= 0.99 ? 20 : 0)
                 let center = size.height / 2
 
                 var col = 0

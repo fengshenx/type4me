@@ -49,8 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let showDock = UserDefaults.standard.object(forKey: "tf_showDockIcon") as? Bool ?? true
         NSApp.setActivationPolicy(showDock ? .regular : .accessory)
         KeychainService.migrateIfNeeded()
-        HotwordStorage.seedIfNeeded()
-        SnippetStorage.seedIfNeeded()
+        HotwordStorage.migrateIfNeeded()
+        SnippetStorage.migrateIfNeeded()
 
         DebugFileLogger.startSession()
         DebugFileLogger.log("applicationDidFinishLaunching")
@@ -440,7 +440,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static var openSettingsAction: (() -> Void)?
 
     func applicationWillTerminate(_ notification: Notification) {
-        Task { await SenseVoiceServerManager.shared.stop() }
+        // Synchronous kill: don't rely on async Task, app exits immediately after this returns
+        SenseVoiceServerManager.killAllServerProcesses()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

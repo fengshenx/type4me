@@ -115,6 +115,25 @@ WRAPPER
     echo "sensevoice-server bundled and signed."
 fi
 
+# Copy qwen3-asr-server if built and BUNDLE_LOCAL_ASR is set
+QWEN3_DIST="$PROJECT_DIR/qwen3-asr-server/dist/qwen3-asr-server"
+if [ "${BUNDLE_LOCAL_ASR:-0}" = "1" ] && [ -d "$QWEN3_DIST" ]; then
+    echo "Bundling qwen3-asr-server..."
+    rm -rf "$APP_PATH/Contents/MacOS/qwen3-asr-server-dist" "$APP_PATH/Contents/MacOS/qwen3-asr-server"
+    cp -R "$QWEN3_DIST" "$APP_PATH/Contents/MacOS/qwen3-asr-server-dist"
+    # Create a wrapper script at the expected path
+    cat > "$APP_PATH/Contents/MacOS/qwen3-asr-server" << 'WRAPPER'
+#!/bin/bash
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/qwen3-asr-server-dist/qwen3-asr-server" "$@"
+WRAPPER
+    chmod +x "$APP_PATH/Contents/MacOS/qwen3-asr-server"
+    # Sign all binaries in the server dist for Gatekeeper
+    find "$APP_PATH/Contents/MacOS/qwen3-asr-server-dist" -type f \( -name "*.dylib" -o -name "*.so" -o -name "*.metallib" -o -perm +111 \) \
+        -exec codesign --force --sign "${SIGNING_IDENTITY}" {} \; 2>/dev/null || true
+    echo "qwen3-asr-server bundled and signed."
+fi
+
 # Copy LLM model if available (for local LLM DMG builds)
 LLM_MODEL_DIR="$PROJECT_DIR/sensevoice-server/models"
 LLM_MODEL_SIZE="${BUNDLE_LOCAL_LLM:-0}"  # 0=none, 4b, 9b
@@ -134,21 +153,27 @@ fi
 cp "$PROJECT_DIR/Type4Me/Resources/THIRD_PARTY_LICENSES.txt" "$APP_PATH/Contents/Resources/" 2>/dev/null || true
 
 echo "Signing with '${SIGNING_IDENTITY}'..."
-# PyInstaller's sensevoice-server-dist contains .dylibs and dist-info dirs
-# that confuse codesign's bundle detection. Move server files out temporarily.
-SV_TEMP=""
+# PyInstaller dist dirs contain .dylibs and dist-info dirs that confuse
+# codesign's bundle detection. Move server files out temporarily.
+SERVER_TEMP=""
 SV_DIST="$APP_PATH/Contents/MacOS/sensevoice-server-dist"
 SV_WRAPPER="$APP_PATH/Contents/MacOS/sensevoice-server"
-if [ -d "$SV_DIST" ] || [ -f "$SV_WRAPPER" ]; then
-    SV_TEMP="$(mktemp -d)"
-    [ -d "$SV_DIST" ] && mv "$SV_DIST" "$SV_TEMP/sensevoice-server-dist"
-    [ -f "$SV_WRAPPER" ] && mv "$SV_WRAPPER" "$SV_TEMP/sensevoice-server"
+Q3_DIST="$APP_PATH/Contents/MacOS/qwen3-asr-server-dist"
+Q3_WRAPPER="$APP_PATH/Contents/MacOS/qwen3-asr-server"
+if [ -d "$SV_DIST" ] || [ -f "$SV_WRAPPER" ] || [ -d "$Q3_DIST" ] || [ -f "$Q3_WRAPPER" ]; then
+    SERVER_TEMP="$(mktemp -d)"
+    [ -d "$SV_DIST" ] && mv "$SV_DIST" "$SERVER_TEMP/sensevoice-server-dist"
+    [ -f "$SV_WRAPPER" ] && mv "$SV_WRAPPER" "$SERVER_TEMP/sensevoice-server"
+    [ -d "$Q3_DIST" ] && mv "$Q3_DIST" "$SERVER_TEMP/qwen3-asr-server-dist"
+    [ -f "$Q3_WRAPPER" ] && mv "$Q3_WRAPPER" "$SERVER_TEMP/qwen3-asr-server"
 fi
 codesign -f -s "$SIGNING_IDENTITY" "$APP_PATH" 2>/dev/null && echo "Signed." || echo "Signing skipped (no identity available)."
-if [ -n "$SV_TEMP" ]; then
-    [ -d "$SV_TEMP/sensevoice-server-dist" ] && mv "$SV_TEMP/sensevoice-server-dist" "$SV_DIST"
-    [ -f "$SV_TEMP/sensevoice-server" ] && mv "$SV_TEMP/sensevoice-server" "$SV_WRAPPER"
-    rm -rf "$SV_TEMP"
+if [ -n "$SERVER_TEMP" ]; then
+    [ -d "$SERVER_TEMP/sensevoice-server-dist" ] && mv "$SERVER_TEMP/sensevoice-server-dist" "$SV_DIST"
+    [ -f "$SERVER_TEMP/sensevoice-server" ] && mv "$SERVER_TEMP/sensevoice-server" "$SV_WRAPPER"
+    [ -d "$SERVER_TEMP/qwen3-asr-server-dist" ] && mv "$SERVER_TEMP/qwen3-asr-server-dist" "$Q3_DIST"
+    [ -f "$SERVER_TEMP/qwen3-asr-server" ] && mv "$SERVER_TEMP/qwen3-asr-server" "$Q3_WRAPPER"
+    rm -rf "$SERVER_TEMP"
 fi
 
 echo "App bundle ready at $APP_PATH"

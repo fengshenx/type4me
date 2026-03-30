@@ -1,19 +1,41 @@
 import Foundation
+#if canImport(AppKit)
+import AppKit
+#endif
 
-/// Stores trigger → replacement snippet mappings in UserDefaults.
+/// Snippet replacement with two independent stores:
+/// - **Built-in file** (`builtin-snippets.json`): seeded from defaults, user-editable via Finder for bulk ops
+/// - **User file** (`snippets.json`): managed by Settings UI, auto-loaded on save
+/// Both are merged at runtime; user entries override built-in on trigger conflict.
 enum SnippetStorage {
 
-    private static let key = "tf_snippets"
-    private static let seededKey = "tf_snippets_seeded_v1"
+    // MARK: - File paths
 
-    // MARK: - Built-in ASR correction mappings (verified by testing)
+    private static var appSupportDir: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return dir.appendingPathComponent("Type4Me")
+    }
 
-    /// Default snippet mappings seeded on first launch.
-    /// Each entry is (trigger, replacement). Triggers are case-insensitive and
-    /// tolerate whitespace variations via buildFlexPattern.
+    /// Built-in snippets file (seeded from defaults, user-editable for bulk ops)
+    static var builtinFileURL: URL { appSupportDir.appendingPathComponent("builtin-snippets.json") }
+
+    /// User snippets file (managed by Settings UI)
+    static var userFileURL: URL { appSupportDir.appendingPathComponent("snippets.json") }
+
+    // MARK: - Codable model
+
+    private struct Entry: Codable {
+        let trigger: String
+        let replacement: String
+    }
+
+    // MARK: - Default snippets (used for initial seeding)
+
+    /// Default ASR correction mappings. Seeded into builtin-snippets.json on first launch.
+    /// Triggers are matched case-insensitively and space-insensitively.
     ///
     /// Verified against: Volcengine Seed ASR 2.0, Qwen3-ASR 0.6B/1.7B, SenseVoice-Small.
-    static let builtinSnippets: [(trigger: String, value: String)] = [
+    static let defaultSnippets: [(trigger: String, value: String)] = [
         // ── vibe coding (all engines consistently fail) ──
         ("web coding",      "vibe coding"),
         ("webb coding",     "vibe coding"),
@@ -39,14 +61,12 @@ enum SnippetStorage {
         // ── Frameworks & tools ──
         ("long chain",      "LangChain"),
         ("long train",      "LangChain"),
-        ("LongChain",       "LangChain"),
         ("get hub",         "GitHub"),
         ("git hub",         "GitHub"),
         ("VS code",         "VS Code"),
         ("Kubanetes",       "Kubernetes"),
         ("Kubenetes",       "Kubernetes"),
         ("Nextjs",          "Next.js"),
-        ("next js",         "Next.js"),
         ("type script",     "TypeScript"),
         ("open source",     "open-source"),
 
@@ -58,61 +78,83 @@ enum SnippetStorage {
         ("deepse",          "DeepSeek"),
     ]
 
-    /// Seeds default ASR correction snippets, merging with any existing user snippets.
-    /// Skips entries whose trigger already exists (case-insensitive) to avoid duplicates.
-    static func seedIfNeeded() {
-        guard !UserDefaults.standard.bool(forKey: seededKey) else { return }
-        var existing = load()
-        let existingTriggers = Set(existing.map { $0.trigger.lowercased() })
-        for snippet in builtinSnippets where !existingTriggers.contains(snippet.trigger.lowercased()) {
-            existing.append(snippet)
-        }
-        save(existing)
-        UserDefaults.standard.set(true, forKey: seededKey)
-    }
+    // MARK: - Initialization
 
-    static func load() -> [(trigger: String, value: String)] {
-        guard let data = UserDefaults.standard.data(forKey: key),
+    private static let migratedKey = "tf_snippets_migrated_to_file_v2"
+    private static let oldUDKey = "tf_snippets"
+
+    /// Seeds built-in file and migrates old UserDefaults data to user file.
+    static func migrateIfNeeded() {
+        // Seed built-in file if missing
+        if !FileManager.default.fileExists(atPath: builtinFileURL.path) {
+            saveBuiltin(defaultSnippets)
+        }
+
+        guard !UserDefaults.standard.bool(forKey: migratedKey) else { return }
+        defer { UserDefaults.standard.set(true, forKey: migratedKey) }
+
+        // Migrate old UserDefaults to user file (skip if user file already exists)
+        guard !FileManager.default.fileExists(atPath: userFileURL.path) else { return }
+        guard let data = UserDefaults.standard.data(forKey: oldUDKey),
               let pairs = try? JSONDecoder().decode([[String]].self, from: data)
-        else { return [] }
-        return pairs.compactMap { pair in
+        else { return }
+
+        let oldSnippets = pairs.compactMap { pair -> (trigger: String, value: String)? in
             guard pair.count == 2 else { return nil }
             return (trigger: pair[0], value: pair[1])
         }
+
+        // Filter out entries that duplicate built-in
+        func norm(_ s: String) -> String { s.filter { !$0.isWhitespace }.lowercased() }
+        let builtinKeys = Set(defaultSnippets.map { "\(norm($0.trigger))\t\($0.value)" })
+        let userOnly = oldSnippets.filter { !builtinKeys.contains("\(norm($0.trigger))\t\($0.value)") }
+
+        if !userOnly.isEmpty {
+            save(userOnly)
+        }
+    }
+
+    // MARK: - User file (Settings UI)
+
+    static func load() -> [(trigger: String, value: String)] {
+        return readFile(userFileURL)
     }
 
     static func save(_ snippets: [(trigger: String, value: String)]) {
-        let pairs = snippets.map { [$0.trigger, $0.value] }
-        if let data = try? JSONEncoder().encode(pairs) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+        writeFile(snippets, to: userFileURL)
     }
 
-    /// Apply all snippet replacements to text.
-    /// Builds a regex per trigger that allows optional whitespace between each character cluster,
-    /// so "我的Gmail邮箱" matches "我的 Gmail 邮箱", "我的Gmail 邮箱", etc.
-    static func apply(to text: String) -> String {
-        let snippets = load()
-        guard !snippets.isEmpty else { return text }
-        var result = text
-        for snippet in snippets {
-            let pattern = buildFlexPattern(snippet.trigger)
-            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
-                result = regex.stringByReplacingMatches(
-                    in: result,
-                    range: NSRange(result.startIndex..., in: result),
-                    withTemplate: NSRegularExpression.escapedTemplate(for: snippet.value)
-                )
-            }
-        }
-        return result
+    // MARK: - Built-in file (Finder editable)
+
+    static func loadBuiltin() -> [(trigger: String, value: String)] {
+        return readFile(builtinFileURL)
     }
 
-    /// Apply builtin + user snippets (user overrides builtin on trigger conflict).
+    static func saveBuiltin(_ snippets: [(trigger: String, value: String)]) {
+        writeFile(snippets, to: builtinFileURL)
+    }
+
+    static func builtinCount() -> Int {
+        return loadBuiltin().count
+    }
+
+    /// Reveal built-in snippets file in Finder.
+    static func revealBuiltinInFinder() {
+        if !FileManager.default.fileExists(atPath: builtinFileURL.path) {
+            saveBuiltin(defaultSnippets)
+        }
+        #if canImport(AppKit)
+        NSWorkspace.shared.activateFileViewerSelecting([builtinFileURL])
+        #endif
+    }
+
+    // MARK: - Apply (merge both stores)
+
+    /// Apply built-in + user snippets. User entries override built-in on trigger conflict.
     static func applyEffective(to text: String) -> String {
+        let builtinSnippets = loadBuiltin()
         let userSnippets = load()
         let userTriggers = Set(userSnippets.map { $0.trigger.lowercased() })
-        // Builtin snippets, excluding those overridden by user
         let effectiveBuiltin = builtinSnippets.filter { !userTriggers.contains($0.trigger.lowercased()) }
         let allSnippets = effectiveBuiltin + userSnippets
 
@@ -130,42 +172,33 @@ enum SnippetStorage {
         return result
     }
 
-    /// Splits trigger into character clusters and joins with flexible whitespace matchers.
-    /// Words (whitespace-separated) are joined with `\s+`, and within each word, runs of
-    /// different scripts (CJK vs ASCII) are joined with `\s*`.
+    // MARK: - Pattern building
+
+    /// Builds a regex that matches the trigger case-insensitively and space-insensitively.
+    /// Strips all whitespace from trigger, then inserts `\s*` between each character.
     private static func buildFlexPattern(_ trigger: String) -> String {
-        let words = trigger.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-        let wordPatterns = words.map { word -> String in
-            var clusters: [String] = []
-            var current = ""
-            var lastType: CharType?
-            for ch in word {
-                let type = charType(ch)
-                if let last = lastType, last != type {
-                    if !current.isEmpty { clusters.append(NSRegularExpression.escapedPattern(for: current)) }
-                    current = String(ch)
-                } else {
-                    current.append(ch)
-                }
-                lastType = type
-            }
-            if !current.isEmpty { clusters.append(NSRegularExpression.escapedPattern(for: current)) }
-            return clusters.joined(separator: "\\s*")
-        }
-        return wordPatterns.joined(separator: "\\s+")
+        let chars = trigger.filter { !$0.isWhitespace }
+        guard !chars.isEmpty else { return NSRegularExpression.escapedPattern(for: trigger) }
+        return chars.map { NSRegularExpression.escapedPattern(for: String($0)) }
+            .joined(separator: "\\s*")
     }
 
-    private enum CharType { case cjk, ascii, other }
+    // MARK: - File I/O helpers
 
-    private static func charType(_ ch: Character) -> CharType {
-        guard let scalar = ch.unicodeScalars.first else { return .other }
-        let v = scalar.value
-        // CJK Unified Ideographs + common CJK ranges
-        if (0x4E00...0x9FFF).contains(v) || (0x3400...0x4DBF).contains(v) ||
-           (0x3000...0x303F).contains(v) || (0xFF00...0xFFEF).contains(v) {
-            return .cjk
-        }
-        if ch.isASCII { return .ascii }
-        return .other
+    private static func readFile(_ url: URL) -> [(trigger: String, value: String)] {
+        guard let data = try? Data(contentsOf: url),
+              let entries = try? JSONDecoder().decode([Entry].self, from: data)
+        else { return [] }
+        return entries.map { (trigger: $0.trigger, value: $0.replacement) }
+    }
+
+    private static func writeFile(_ snippets: [(trigger: String, value: String)], to url: URL) {
+        let dir = url.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let entries = snippets.map { Entry(trigger: $0.trigger, replacement: $0.value) }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(entries) else { return }
+        try? data.write(to: url, options: .atomic)
     }
 }

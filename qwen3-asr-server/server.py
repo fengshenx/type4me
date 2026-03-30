@@ -201,12 +201,39 @@ async def health():
 _llm = None
 _llm_lock = asyncio.Lock()
 _llm_model_path = ""
+_llm_disabled = False  # When True, refuse to load LLM (user clicked stop)
+
+
+@app.post("/llm/unload")
+async def llm_unload():
+    """Unload the LLM model and prevent re-loading until /llm/load is called."""
+    global _llm, _llm_disabled
+    async with _llm_lock:
+        _llm_disabled = True
+        if _llm is not None:
+            del _llm
+            _llm = None
+            import gc; gc.collect()
+            print("LLM unloaded and disabled.", flush=True)
+            return {"status": "unloaded"}
+        return {"status": "disabled"}
+
+
+@app.post("/llm/load")
+async def llm_load():
+    """Re-enable LLM loading (after user clicks start)."""
+    global _llm_disabled
+    _llm_disabled = False
+    print("LLM re-enabled.", flush=True)
+    return {"status": "enabled"}
 
 
 def _load_llm(model_path: str):
     global _llm
     if _llm is not None:
         return _llm
+    if _llm_disabled:
+        return None
     from llama_cpp import Llama
     print(f"Loading LLM from {model_path}...", flush=True)
     _llm = Llama(
@@ -221,6 +248,8 @@ def _load_llm(model_path: str):
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: dict):
+    if _llm_disabled:
+        return {"error": "LLM disabled", "choices": [{"message": {"content": ""}}]}
     if _llm is None and not _llm_model_path:
         return {"error": "LLM not configured"}, 503
 
@@ -232,6 +261,8 @@ async def chat_completions(request: dict):
         llm = await asyncio.get_event_loop().run_in_executor(
             None, _load_llm, _llm_model_path
         )
+    if llm is None:
+        return {"error": "LLM disabled", "choices": [{"message": {"content": ""}}]}
 
     if messages and messages[-1].get("role") == "user":
         content = messages[-1]["content"]

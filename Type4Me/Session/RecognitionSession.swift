@@ -250,6 +250,7 @@ actor RecognitionSession {
             self.asrClient = nil
             state = .idle
             onASREvent?(.error(error))
+            onASREvent?(.completed)
             return
         }
 
@@ -590,10 +591,11 @@ actor RecognitionSession {
         } else {
             // No text recognized: tell UI to exit processing state
             onASREvent?(.processingResult(text: ""))
+            onASREvent?(.completed)
         }
 
         // Only reset to idle if this is still the active session.
-        if sessionGeneration == myGeneration, state == .finishing {
+        if sessionGeneration == myGeneration, state != .idle {
             state = .idle
             hasEmittedReadyForCurrentSession = false
             currentTranscript = .empty
