@@ -24,7 +24,7 @@ elif security find-identity -v -p codesigning 2>/dev/null | grep -q "Type4Me Dev
 elif [ -d "$APP_PATH" ] && codesign -dv "$APP_PATH" 2>/dev/null; then
     # Existing app is already signed -- reuse its identity to preserve Accessibility permission.
     # Changing signing identity invalidates macOS TCC entries (Accessibility, etc).
-    EXISTING_AUTHORITY=$(codesign -dvvv "$APP_PATH" 2>&1 | grep "^Authority=" | head -1 | cut -d= -f2)
+    EXISTING_AUTHORITY=$(codesign -dvvv "$APP_PATH" 2>&1 | grep "^Authority=" | head -1 | cut -d= -f2 || true)
     if [ -n "$EXISTING_AUTHORITY" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q "$EXISTING_AUTHORITY"; then
         SIGNING_IDENTITY="$EXISTING_AUTHORITY"
         echo "Reusing existing signing identity: $SIGNING_IDENTITY"
