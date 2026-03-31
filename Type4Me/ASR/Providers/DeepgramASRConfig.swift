@@ -4,13 +4,29 @@ struct DeepgramASRConfig: ASRProviderConfig, Sendable {
 
     static let provider = ASRProvider.deepgram
     static let displayName = "Deepgram"
-    static let defaultModel = "nova-2"
+    static let defaultModel = "nova-3"
     static let defaultLanguage = "zh"
 
+    static let supportedModels = [
+        "nova-3",
+        "nova-2",
+        "nova-2-general",
+        "nova-2-meeting",
+        "nova-2-phonecall",
+    ]
+
+    static let supportedLanguages = [
+        "zh", "zh-CN", "zh-TW", "zh-HK",
+        "en", "en-US", "en-GB",
+        "ja", "ko", "multi",
+    ]
+
     static var credentialFields: [CredentialField] {[
-        CredentialField(key: "apiKey", label: "API Key", placeholder: "dg_...", isSecure: true, isOptional: false, defaultValue: ""),
-        CredentialField(key: "model", label: "Model", placeholder: defaultModel, isSecure: false, isOptional: false, defaultValue: defaultModel),
-        CredentialField(key: "language", label: "Language", placeholder: defaultLanguage, isSecure: false, isOptional: false, defaultValue: defaultLanguage),
+        CredentialField(key: "apiKey", label: "API Key", placeholder: L("粘贴 API Key", "Paste your API Key"), isSecure: true, isOptional: false, defaultValue: ""),
+        CredentialField(key: "model", label: "Model", placeholder: defaultModel, isSecure: false, isOptional: false, defaultValue: defaultModel,
+            options: supportedModels.map { FieldOption(value: $0, label: $0) }),
+        CredentialField(key: "language", label: "Language", placeholder: defaultLanguage, isSecure: false, isOptional: false, defaultValue: defaultLanguage,
+            options: supportedLanguages.map { FieldOption(value: $0, label: $0) }),
     ]}
 
     let apiKey: String

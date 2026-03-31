@@ -34,9 +34,13 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
         currentASRFields.isEmpty && !selectedASRProvider.isLocal
     }
 
-    /// Effective values: saved base + dirty edits overlaid (including clears).
+    /// Effective values: saved base + defaults for unsaved fields + dirty edits overlaid.
     private var effectiveASRValues: [String: String] {
         var result = savedASRValues
+        // Fill in defaults for fields not yet saved (new provider scenario)
+        for (key, value) in asrCredentialValues where result[key] == nil {
+            result[key] = value
+        }
         for key in editedFields {
             result[key] = asrCredentialValues[key] ?? ""
         }
@@ -84,6 +88,15 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
         }
     }
 
+    private var currentProviderNote: String? {
+        switch selectedASRProvider {
+        case .deepgram:
+            return L("受接口限制，热词仅取前 30 个", "Due to API limits, only the first 30 hotwords are used")
+        default:
+            return nil
+        }
+    }
+
     // MARK: Body
 
     var body: some View {
@@ -98,8 +111,18 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
                         if let prefix = link.prefix {
                             Text(prefix).font(.system(size: 10)).foregroundStyle(TF.settingsTextTertiary)
                         }
-                        Link(link.label, destination: link.url)
-                            .font(.system(size: 10, weight: .medium))
+                        Button {
+                            NSWorkspace.shared.open(link.url)
+                        } label: {
+                            HStack(spacing: 2) {
+                                Text(link.label)
+                                Image(systemName: "arrow.up.right")
+                                    .font(.system(size: 7))
+                            }
+                            .foregroundStyle(TF.settingsAccentBlue)
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 10, weight: .medium))
                     }
                 }
                 .padding(.bottom, 4)
@@ -154,6 +177,14 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
                         .foregroundStyle(TF.settingsAccentAmber)
                         .padding(.top, 4)
                 }
+
+                if let note = currentProviderNote {
+                    Text(note)
+                        .font(.system(size: 10))
+                        .foregroundStyle(TF.settingsTextTertiary)
+                        .padding(.top, 4)
+                }
+
             }
         }
         .task {
@@ -276,7 +307,7 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
         for field in currentASRFields {
             let val = asrCredentialValues[field.key] ?? ""
             guard !val.isEmpty else { continue }
-            rows.append((field.label, maskedSecret(val)))
+            rows.append((field.label, field.isSecure ? maskedSecret(val) : val))
         }
         return rows
     }
@@ -411,9 +442,18 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
                            "This is the cloud-only version. Download the full DMG with embedded model for local ASR."))
                         .font(.system(size: 10))
                         .foregroundStyle(TF.settingsTextSecondary)
-                    Link(L("前往下载完整版", "Download Full Version"),
-                         destination: URL(string: "https://github.com/joewongjc/type4me/releases")!)
-                        .font(.system(size: 11, weight: .medium))
+                    Button {
+                        NSWorkspace.shared.open(URL(string: "https://github.com/joewongjc/type4me/releases")!)
+                    } label: {
+                        HStack(spacing: 2) {
+                            Text(L("前往下载完整版", "Download Full Version"))
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 8))
+                        }
+                        .foregroundStyle(TF.settingsAccentBlue)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
                 }
             }
         }
@@ -688,7 +728,8 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
         return ASRRequestOptions(
             enablePunc: enablePunc,
             hotwords: HotwordStorage.load(),
-            boostingTableID: biasSettings.boostingTableID
+            boostingTableID: biasSettings.boostingTableID,
+            bypassProxy: ProxyBypassMode.current.bypassASR
         )
     }
 }

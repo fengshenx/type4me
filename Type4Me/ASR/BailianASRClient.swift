@@ -68,7 +68,7 @@ actor BailianASRClient: SpeechRecognizer {
         let taskID = UUID().uuidString.lowercased()
         let gate = BailianTaskStartGate()
         let delegate = BailianWebSocketDelegate(taskStartGate: gate)
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let session = URLSession(configuration: options.urlSessionConfiguration, delegate: delegate, delegateQueue: nil)
         let task = session.webSocketTask(with: request)
         task.resume()
 
@@ -96,8 +96,8 @@ actor BailianASRClient: SpeechRecognizer {
 
     func sendAudio(_ data: Data) async throws {
         guard let task = webSocketTask else { return }
-        audioPacketCount += 1
         try await task.send(.data(data))
+        audioPacketCount += 1
     }
 
     func endAudio() async throws {

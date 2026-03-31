@@ -14,7 +14,7 @@ struct SonioxASRConfig: ASRProviderConfig, Sendable {
         CredentialField(
             key: "apiKey",
             label: "API Key",
-            placeholder: "",
+            placeholder: L("粘贴 API Key", "Paste your API Key"),
             isSecure: true,
             isOptional: false,
             defaultValue: ""

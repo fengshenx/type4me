@@ -378,7 +378,7 @@ struct HistoryTab: View {
                 Label(record.createdAt.formatted(timeFormat), systemImage: "clock")
                 Label(String(format: "%.1fs", record.durationSeconds), systemImage: "waveform")
                 if let chars = record.characterCount {
-                    Label("\(chars) 字", systemImage: "doc.text")
+                    Label(L("\(chars) 字", "\(chars) chars"), systemImage: "doc.text")
                 }
                 if let mode = record.processingMode {
                     Label(mode, systemImage: "text.bubble")

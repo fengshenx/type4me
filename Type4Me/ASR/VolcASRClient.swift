@@ -63,7 +63,7 @@ actor VolcASRClient: SpeechRecognizer {
         request.setValue(volcConfig.resourceId, forHTTPHeaderField: "X-Api-Resource-Id")
         request.setValue(connectId, forHTTPHeaderField: "X-Api-Connect-Id")
 
-        let session = URLSession(configuration: .default)
+        let session = URLSession(configuration: options.urlSessionConfiguration)
         let task = session.webSocketTask(with: request)
         task.resume()
         self.session = session
@@ -150,13 +150,13 @@ actor VolcASRClient: SpeechRecognizer {
 
     func sendAudio(_ data: Data) async throws {
         guard let task = webSocketTask else { return }
-        audioPacketCount += 1
-        totalAudioBytes += data.count
         let packet = VolcProtocol.encodeAudioPacket(
             audioData: data,
             isLast: false
         )
         try await task.send(.data(packet))
+        audioPacketCount += 1
+        totalAudioBytes += data.count
     }
 
     // MARK: - End Audio

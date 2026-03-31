@@ -201,10 +201,13 @@ final class AudioCaptureEngine: NSObject, @unchecked Sendable, AVCaptureAudioDat
             DebugFileLogger.log("audio heartbeat callback=\(levelCounter) bufferSize=\(buffer.count) level=\(String(format: "%.3f", level))")
         }
 
-        // Lazy-create converter from source format → 16kHz Int16
+        // Create or recreate converter when source format changes
         bufferLock.lock()
-        if converter == nil {
-            let sourceFormat = pcmBuffer.format
+        let sourceFormat = pcmBuffer.format
+        if converter == nil || converter?.inputFormat != sourceFormat {
+            if converter != nil {
+                NSLog("[Audio] Input format changed, rebuilding converter: %@", sourceFormat.description)
+            }
             converter = AVAudioConverter(from: sourceFormat, to: Self.targetFormat)
             NSLog("[Audio] Input format: %@", sourceFormat.description)
         }

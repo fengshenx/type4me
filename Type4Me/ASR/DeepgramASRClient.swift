@@ -70,7 +70,7 @@ actor DeepgramASRClient: SpeechRecognizer {
 
         let connectionGate = DeepgramConnectionGate()
         let delegate = DeepgramWebSocketDelegate(connectionGate: connectionGate)
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let session = URLSession(configuration: options.urlSessionConfiguration, delegate: delegate, delegateQueue: nil)
         let task = session.webSocketTask(with: request)
         task.resume()
 
@@ -90,14 +90,14 @@ actor DeepgramASRClient: SpeechRecognizer {
 
     func sendAudio(_ data: Data) async throws {
         guard let task = webSocketTask else { return }
-        audioPacketCount += 1
         try await task.send(.data(data))
+        audioPacketCount += 1
     }
 
     func endAudio() async throws {
         guard let task = webSocketTask else { return }
-        didRequestClose = true
         try await task.send(.string(DeepgramProtocol.closeStreamMessage()))
+        didRequestClose = true
     }
 
     func disconnect() {

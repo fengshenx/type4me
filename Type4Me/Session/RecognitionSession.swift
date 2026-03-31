@@ -1,6 +1,15 @@
 import AppKit
 import os
 
+/// Thread-safe flag for the detached sender to signal upload failure.
+private final class UploadFailureFlag: Sendable {
+    private let _value = OSAllocatedUnfairLock(initialState: false)
+    var failed: Bool {
+        get { _value.withLock { $0 } }
+        set { _value.withLock { $0 = newValue } }
+    }
+}
+
 actor RecognitionSession {
 
     // MARK: - State
@@ -57,6 +66,9 @@ actor RecognitionSession {
     private var currentMode: ProcessingMode = .direct
     private var recordingStartTime: Date?
     private var currentConfig: (any ASRProviderConfig)?
+    /// The ASR provider for the current session, captured at start time.
+    /// stopRecording reads this, not the global setting.
+    private var activeProvider: ASRProvider = .volcano
 
     // MARK: - UI Callback
 
@@ -86,6 +98,7 @@ actor RecognitionSession {
     private var hasEmittedReadyForCurrentSession = false
     private var audioChunkContinuation: AsyncStream<Data>.Continuation?
     private var audioChunkSenderTask: Task<Void, Never>?
+    private var uploadFailureFlag: UploadFailureFlag?
 
     // MARK: - Prompt context (selected text + clipboard captured at recording start)
 
@@ -124,6 +137,7 @@ actor RecognitionSession {
         }
 
         let provider = KeychainService.selectedASRProvider
+        activeProvider = provider
         let effectiveMode = ASRProviderRegistry.resolvedMode(for: mode, provider: provider)
         sessionGeneration &+= 1
         let myGeneration = sessionGeneration
@@ -320,8 +334,10 @@ actor RecognitionSession {
 
         // Switch callback from buffer to live pipeline
         var chunkCount = bufferedChunks.count
+        let failureFlag = self.uploadFailureFlag
         audioEngine.onAudioChunk = { [weak self] data in
-            guard let self else { return }
+            guard self != nil else { return }
+            if failureFlag?.failed == true { return }
             chunkCount += 1
             chunkContinuation.yield(data)
         }
@@ -342,7 +358,7 @@ actor RecognitionSession {
 
     /// Switch the processing mode before stopping. Used for cross-mode hotkey stops.
     func switchMode(to mode: ProcessingMode) {
-        currentMode = ASRProviderRegistry.resolvedMode(for: mode, provider: KeychainService.selectedASRProvider)
+        currentMode = ASRProviderRegistry.resolvedMode(for: mode, provider: activeProvider)
     }
 
     // MARK: - Stop
@@ -394,7 +410,7 @@ actor RecognitionSession {
         // against the final ASR transcript after full teardown.
         cancelSpeculativeLLM()
         let needsLLM = !currentMode.prompt.isEmpty
-        let provider = KeychainService.selectedASRProvider
+        let provider = activeProvider
 
         // ASR teardown: send endAudio and drain event stream with hard deadlines.
         // Uses detached tasks + continuation so a stuck client can't block stopRecording.
@@ -406,11 +422,13 @@ actor RecognitionSession {
                 try await client.endAudio()
             }
             if !endAudioOK {
-                DebugFileLogger.log("endAudio timeout, forcing disconnect")
+                DebugFileLogger.log("endAudio timeout or failed")
                 asrTeardownClean = false
             }
 
-            if asrTeardownClean, let evtTask = eventConsumptionTask {
+            // Always try to drain events — even if endAudio failed, the server
+            // may have already queued transcript events before the connection broke.
+            if let evtTask = eventConsumptionTask {
                 let drainTimeout: Duration = providerIsStreaming ? .seconds(2) : .seconds(5)
                 let drained = await withTimeout(drainTimeout) {
                     await evtTask.value
@@ -475,6 +493,30 @@ actor RecognitionSession {
             DebugFileLogger.log("stopRecording: zombie after ASR teardown, bailing")
             return
         }
+
+        // Batch fallback: if streaming broke mid-session, always retry with
+        // the full local recording to get complete text, even if we have partial.
+        let streamingFailed = uploadFailureFlag?.failed == true || !asrTeardownClean
+        if streamingFailed {
+            let partialText = currentTranscript.composedText
+            DebugFileLogger.log("stop: streaming failed (partial=\(partialText.count) chars), attempting batch fallback")
+            let fullAudio = audioEngine.getRecordedAudio()
+            if !fullAudio.isEmpty, let config = currentConfig {
+                onASREvent?(.processingResult(text: partialText.isEmpty ? "重新识别中..." : partialText))
+                if let batchText = await attemptBatchFallback(audio: fullAudio, config: config) {
+                    currentTranscript = RecognitionTranscript(
+                        confirmedSegments: [batchText],
+                        partialText: "",
+                        authoritativeText: batchText,
+                        isFinal: true
+                    )
+                    DebugFileLogger.log("stop: batch fallback succeeded, \(batchText.count) chars")
+                } else {
+                    DebugFileLogger.log("stop: batch fallback failed, using partial text")
+                }
+            }
+        }
+        uploadFailureFlag = nil
 
         // Combine confirmed segments + any trailing unconfirmed partial.
         let effectiveText = currentTranscript.displayText
@@ -560,7 +602,11 @@ actor RecognitionSession {
             // Save to history
             let recordId = UUID().uuidString
             let duration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
-            let status = injectionAborted ? "aborted" : (llmFailed ? "llm_error" : "completed")
+            let status: String
+            if injectionAborted { status = "aborted" }
+            else if llmFailed { status = "llm_error" }
+            else if streamingFailed { status = "stream_recovered" }
+            else { status = "completed" }
             await historyStore.insert(HistoryRecord(
                 id: recordId,
                 createdAt: Date(),
@@ -578,7 +624,24 @@ actor RecognitionSession {
             // No separate .error emission here to avoid green→red UI flash.
 
         } else {
-            // No text recognized: tell UI to exit processing state
+            // No text recognized: save to history as failed, then exit.
+            let duration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
+            if duration > 1.0 {
+                // Only save if recording lasted more than 1 second (skip accidental taps)
+                let status = streamingFailed ? "stream_failed" : "empty"
+                await historyStore.insert(HistoryRecord(
+                    id: UUID().uuidString,
+                    createdAt: Date(),
+                    durationSeconds: duration,
+                    rawText: "",
+                    processingMode: currentMode == .direct ? nil : currentMode.name,
+                    processedText: nil,
+                    finalText: "",
+                    status: status,
+                    characterCount: 0
+                ))
+                DebugFileLogger.log("stop: no text recognized, saved to history as \(status)")
+            }
             onASREvent?(.processingResult(text: ""))
             onASREvent?(.completed)
         }
@@ -656,8 +719,10 @@ actor RecognitionSession {
         // does NOT hop back to the actor.  This prevents a blocking
         // WebSocket send from starving stopRecording().
         let client = asrClient
-        let provider = KeychainService.selectedASRProvider
-        let audioInput = ASRProviderRegistry.capabilities(for: provider).audioInput
+        let audioInput = ASRProviderRegistry.capabilities(for: activeProvider).audioInput
+
+        let failureFlag = UploadFailureFlag()
+        self.uploadFailureFlag = failureFlag
 
         audioChunkSenderTask = Task.detached { [weak self] in
             var chunkCount = 0
@@ -675,6 +740,7 @@ actor RecognitionSession {
                     }
                 } catch {
                     DebugFileLogger.log("audio chunk send failed: \(error)")
+                    failureFlag.failed = true
                     // If send fails, stop pumping — connection is dead.
                     break
                 }
@@ -696,10 +762,17 @@ actor RecognitionSession {
         audioChunkContinuation?.finish()
         audioChunkContinuation = nil
 
-        // The sender runs as a detached task, so we don't need to wait
-        // for it.  Just cancel and move on — any in-flight WebSocket send
-        // will complete (or fail) on its own without blocking the actor.
-        audioChunkSenderTask?.cancel()
+        // Give the detached sender a brief window to drain remaining chunks
+        // (especially the tail audio from flushRemaining). Since it's detached,
+        // this wait does NOT block the actor.
+        guard let senderTask = audioChunkSenderTask else { return }
+        let drained = await withTimeout(timeout) {
+            await senderTask.value
+        }
+        if !drained {
+            senderTask.cancel()
+            DebugFileLogger.log("audio chunk pipeline drain timeout; sender cancelled")
+        }
         audioChunkSenderTask = nil
     }
 
@@ -789,9 +862,15 @@ actor RecognitionSession {
         await withCheckedContinuation { continuation in
             let finished = OSAllocatedUnfairLock(initialState: false)
             let operationTask = Task.detached {
-                try await operation()
+                let ok: Bool
+                do {
+                    try await operation()
+                    ok = true
+                } catch {
+                    ok = false
+                }
                 if finished.withLock({ let old = $0; $0 = true; return !old }) {
-                    continuation.resume(returning: true)
+                    continuation.resume(returning: ok)
                 }
             }
             Task.detached {
@@ -799,6 +878,68 @@ actor RecognitionSession {
                 if finished.withLock({ let old = $0; $0 = true; return !old }) {
                     operationTask.cancel()
                     continuation.resume(returning: false)
+                }
+            }
+        }
+    }
+
+    // MARK: - Batch Fallback
+
+    /// Try to transcribe full audio via the same provider in a fresh connection.
+    private func attemptBatchFallback(audio: Data, config: any ASRProviderConfig) async -> String? {
+        let provider = activeProvider
+        let resultTask = Task.detached { () -> String? in
+            guard let client = ASRProviderRegistry.createClient(for: provider) else { return nil }
+            do {
+                let options = ASRRequestOptions(enablePunc: true)
+                try await client.connect(config: config, options: options)
+                // Send all audio at once, then signal end
+                try await client.sendAudio(audio)
+                try await client.endAudio()
+
+                // Wait for final transcript
+                let events = await client.events
+                for await event in events {
+                    switch event {
+                    case .transcript(let transcript) where transcript.isFinal:
+                        await client.disconnect()
+                        let text = transcript.authoritativeText.isEmpty
+                            ? transcript.composedText : transcript.authoritativeText
+                        return text.isEmpty ? nil : text
+                    case .error:
+                        await client.disconnect()
+                        return nil
+                    case .completed:
+                        await client.disconnect()
+                        return nil
+                    default:
+                        continue
+                    }
+                }
+                await client.disconnect()
+                return nil
+            } catch {
+                DebugFileLogger.log("batch fallback error: \(error)")
+                await client.disconnect()
+                return nil
+            }
+        }
+        // Hard timeout via withCheckedContinuation (same pattern as withTimeout).
+        // If resultTask is stuck in a non-cooperative await, we return nil after 30s.
+        return await withCheckedContinuation { continuation in
+            let finished = OSAllocatedUnfairLock(initialState: false)
+            Task.detached {
+                let result = await resultTask.value
+                if finished.withLock({ let old = $0; $0 = true; return !old }) {
+                    continuation.resume(returning: result)
+                }
+            }
+            Task.detached {
+                try? await Task.sleep(for: .seconds(30))
+                if finished.withLock({ let old = $0; $0 = true; return !old }) {
+                    resultTask.cancel()
+                    DebugFileLogger.log("batch fallback timeout after 30s")
+                    continuation.resume(returning: nil)
                 }
             }
         }
@@ -823,7 +964,7 @@ actor RecognitionSession {
         await finishAudioChunkPipeline(timeout: .milliseconds(100))
 
         if let client = asrClient {
-            Task { await client.disconnect() }  // fire-and-forget: don't block reset on WebSocket teardown
+            Task.detached { await client.disconnect() }  // fire-and-forget: detached to avoid blocking actor
         }
         asrClient = nil
 

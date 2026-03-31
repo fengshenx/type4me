@@ -9,12 +9,21 @@ struct VocabularyTab: View {
 
     // Snippets (user file)
     @State private var snippets: [(trigger: String, value: String)] = SnippetStorage.load()
-    @State private var editingIndex: Int? = nil
-    @State private var editTrigger: String = ""
-    @State private var editValue: String = ""
+    @State private var editingGroupReplacement: String? = nil
+    @State private var editReplacementText: String = ""
+    @State private var newTriggerTexts: [String: String] = [:]
     @State private var newTrigger: String = ""
     @State private var newValue: String = ""
     @State private var builtinSnippetCount: Int = SnippetStorage.builtinCount()
+
+    // Sort
+    @State private var hotwordSort: VocabSort = .byTime
+    @State private var snippetSort: VocabSort = .byTime
+
+    private enum VocabSort {
+        case byTime, byAlpha
+        mutating func toggle() { self = self == .byTime ? .byAlpha : .byTime }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -25,10 +34,13 @@ struct VocabularyTab: View {
             )
 
             // MARK: - Hotwords
-            Text(L("ASR 热词", "ASR Hotwords"))
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(TF.settingsText)
-                .padding(.bottom, 4)
+            HStack(spacing: 8) {
+                Text(L("ASR 热词", "ASR Hotwords"))
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(TF.settingsText)
+                sortToggle($hotwordSort)
+            }
+            .padding(.bottom, 4)
 
             Text(L("添加容易被误识别的专有名词，识别引擎会优先匹配。", "Add proper nouns that are often misrecognized. The ASR engine will prioritize them."))
                 .font(.system(size: 11))
@@ -77,7 +89,7 @@ struct VocabularyTab: View {
 
             // User hotwords
             WrappingHStack(spacing: 6) {
-                ForEach(hotwords, id: \.self) { word in
+                ForEach(displayHotwords, id: \.self) { word in
                     hotwordTag(word)
                 }
 
@@ -105,15 +117,33 @@ struct VocabularyTab: View {
             Spacer().frame(height: 20)
 
             // MARK: - Snippets
-            Text(L("片段替换", "Snippets"))
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(TF.settingsText)
-                .padding(.bottom, 4)
+            HStack(spacing: 8) {
+                Text(L("片段替换", "Snippets"))
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(TF.settingsText)
+                sortToggle($snippetSort)
+            }
+            .padding(.bottom, 4)
 
-            Text(L("语音中说到触发词时，最终输出会自动替换为对应内容。", "When a trigger word is spoken, the output is automatically replaced with the corresponding content."))
-                .font(.system(size: 11))
-                .foregroundStyle(TF.settingsTextTertiary)
-                .padding(.bottom, 12)
+            HStack(spacing: 0) {
+                Text(L("说到触发词时自动替换为对应内容。搭配 ", "Trigger words are auto-replaced with mapped content. Use with "))
+                    .foregroundStyle(TF.settingsTextTertiary)
+                Button {
+                    NSWorkspace.shared.open(URL(string: "https://github.com/joewongjc/type4me-vocab-skill")!)
+                } label: {
+                    HStack(spacing: 2) {
+                        Text(L("官方 Skill", "official Skill"))
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 8))
+                    }
+                    .foregroundStyle(TF.settingsAccentBlue)
+                }
+                .buttonStyle(.plain)
+                Text(L(" 可快捷管理。", " for easy management."))
+                    .foregroundStyle(TF.settingsTextTertiary)
+            }
+            .font(.system(size: 11))
+            .padding(.bottom, 12)
 
             // Built-in snippets info bar
             HStack(spacing: 6) {
@@ -154,30 +184,17 @@ struct VocabularyTab: View {
             }
             .padding(.bottom, 8)
 
-            // Header
-            HStack(spacing: 0) {
-                Text(L("触发词", "Trigger"))
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(TF.settingsTextTertiary)
-                    .frame(width: 160, alignment: .leading)
-                Text(L("替换为", "Replace with"))
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(TF.settingsTextTertiary)
-                Spacer()
-            }
-            .padding(.bottom, 4)
-
-            // Existing user snippets
-            ForEach(Array(snippets.enumerated()), id: \.offset) { index, snippet in
-                snippetRow(index: index, trigger: snippet.trigger, value: snippet.value)
-                if index < snippets.count - 1 {
+            // Existing user snippets (grouped by replacement)
+            ForEach(Array(displaySnippets.enumerated()), id: \.element.id) { index, group in
+                if index > 0 {
                     SettingsDivider()
                 }
+                snippetGroupView(group: group)
             }
 
             // Add new row
             HStack(spacing: 8) {
-                TextField(L("触发词", "Trigger"), text: $newTrigger)
+                TextField(L("替换内容", "Replacement"), text: $newValue)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
                     .padding(.horizontal, 8)
@@ -188,15 +205,16 @@ struct VocabularyTab: View {
                             .stroke(TF.settingsTextTertiary.opacity(0.3), style: StrokeStyle(lineWidth: 1, dash: [4]))
                     )
 
-                Image(systemName: "arrow.right")
+                Image(systemName: "arrow.left")
                     .font(.system(size: 10))
                     .foregroundStyle(TF.settingsTextTertiary)
 
-                TextField(L("替换内容", "Replacement"), text: $newValue)
+                TextField(L("触发词", "Trigger"), text: $newTrigger)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
+                    .frame(width: 120)
                     .background(
                         RoundedRectangle(cornerRadius: 6)
                             .stroke(TF.settingsTextTertiary.opacity(0.3), style: StrokeStyle(lineWidth: 1, dash: [4]))
@@ -215,7 +233,7 @@ struct VocabularyTab: View {
             }
             .padding(.top, 8)
 
-            Text(L("示例: \"我的邮箱\" → \"hello@example.com\"", "Example: \"my email\" → \"hello@example.com\""))
+            Text(L("示例: \"hello@example.com\" ← \"我的邮箱\"", "Example: \"hello@example.com\" ← \"my email\""))
                 .font(.system(size: 10))
                 .foregroundStyle(TF.settingsTextTertiary)
                 .padding(.top, 6)
@@ -228,6 +246,27 @@ struct VocabularyTab: View {
             builtinHotwordCount = HotwordStorage.builtinCount()
             builtinSnippetCount = SnippetStorage.builtinCount()
         }
+    }
+
+    // MARK: - Sort Toggle
+
+    private func sortToggle(_ order: Binding<VocabSort>) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                order.wrappedValue.toggle()
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: order.wrappedValue == .byTime ? "clock" : "textformat.abc")
+                    .font(.system(size: 9))
+                Text(order.wrappedValue == .byTime
+                     ? L("添加时间排序", "Sort by time added")
+                     : L("首字母排序", "Sort alphabetically"))
+                    .font(.system(size: 10))
+            }
+            .foregroundStyle(TF.settingsAccentBlue)
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Hotword Tag
@@ -253,104 +292,189 @@ struct VocabularyTab: View {
         )
     }
 
-    // MARK: - Snippet Row
+    // MARK: - Snippet Group View
 
-    private func snippetRow(index: Int, trigger: String, value: String) -> some View {
-        HStack(spacing: 8) {
-            if editingIndex == index {
-                // Editing state
-                TextField("", text: $editTrigger)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(TF.settingsText)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
-                    .frame(width: 152, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(TF.settingsBg))
-                    .onSubmit { commitEdit() }
+    private struct SnippetGroup: Identifiable {
+        var id: String { replacement }
+        let replacement: String
+        let triggers: [String]
+    }
 
-                Image(systemName: "arrow.right")
-                    .font(.system(size: 10))
-                    .foregroundStyle(TF.settingsTextTertiary)
+    private var displayHotwords: [String] {
+        switch hotwordSort {
+        case .byTime: return hotwords
+        case .byAlpha: return hotwords.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        }
+    }
 
-                TextField("", text: $editValue)
+    private var displaySnippets: [SnippetGroup] {
+        let groups = groupedSnippets
+        switch snippetSort {
+        case .byTime: return groups
+        case .byAlpha: return groups.sorted { $0.replacement.localizedCaseInsensitiveCompare($1.replacement) == .orderedAscending }
+        }
+    }
+
+    private var groupedSnippets: [SnippetGroup] {
+        var order: [String] = []
+        var dict: [String: [String]] = [:]
+        for s in snippets {
+            if dict[s.value] == nil {
+                order.append(s.value)
+            }
+            dict[s.value, default: []].append(s.trigger)
+        }
+        return order.map { SnippetGroup(replacement: $0, triggers: dict[$0]!) }
+    }
+
+    private func newTriggerBinding(for replacement: String) -> Binding<String> {
+        Binding(
+            get: { newTriggerTexts[replacement, default: ""] },
+            set: { newTriggerTexts[replacement] = $0 }
+        )
+    }
+
+    private func snippetGroupView(group: SnippetGroup) -> some View {
+        HStack(spacing: 6) {
+            // Replacement (left side)
+            if editingGroupReplacement == group.replacement {
+                TextField("", text: $editReplacementText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
                     .foregroundStyle(TF.settingsText)
                     .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 3)
                     .background(RoundedRectangle(cornerRadius: 4).fill(TF.settingsBg))
-                    .onSubmit { commitEdit() }
+                    .onSubmit { commitGroupEdit(oldReplacement: group.replacement) }
 
-                Spacer()
-
-                Button { commitEdit() } label: {
+                Button { commitGroupEdit(oldReplacement: group.replacement) } label: {
                     Image(systemName: "checkmark")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(TF.settingsAccentGreen)
                 }
                 .buttonStyle(.plain)
 
-                Button { cancelEdit() } label: {
+                Button { editingGroupReplacement = nil } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(TF.settingsTextTertiary)
                 }
                 .buttonStyle(.plain)
             } else {
-                // Display state
-                Text(trigger)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(TF.settingsText)
-                    .frame(width: 152, alignment: .leading)
-
-                Image(systemName: "arrow.right")
-                    .font(.system(size: 10))
-                    .foregroundStyle(TF.settingsTextTertiary)
-
-                Text(value)
+                Text(group.replacement)
                     .font(.system(size: 12))
-                    .foregroundStyle(TF.settingsTextSecondary)
-                    .lineLimit(1)
+                    .foregroundStyle(TF.settingsText)
+            }
 
-                Spacer()
+            Image(systemName: "arrow.left")
+                .font(.system(size: 9))
+                .foregroundStyle(TF.settingsTextTertiary)
 
-                Button { startEdit(index: index) } label: {
+            // Trigger tags (right side)
+            WrappingHStack(spacing: 4) {
+                ForEach(group.triggers, id: \.self) { trigger in
+                    triggerTag(trigger: trigger, replacement: group.replacement)
+                }
+
+                TextField(L("添加...", "Add..."), text: newTriggerBinding(for: group.replacement))
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11))
+                    .frame(width: 60)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(TF.settingsTextTertiary.opacity(0.3), style: StrokeStyle(lineWidth: 1, dash: [4]))
+                    )
+                    .onSubmit { addTriggerToGroup(replacement: group.replacement) }
+            }
+
+            Spacer()
+
+            if editingGroupReplacement != group.replacement {
+                Button { startGroupEdit(replacement: group.replacement) } label: {
                     Image(systemName: "pencil")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.system(size: 9))
                         .foregroundStyle(TF.settingsTextTertiary)
                 }
                 .buttonStyle(.plain)
 
-                Button { removeSnippet(at: index) } label: {
+                Button { removeGroup(replacement: group.replacement) } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.system(size: 9))
                         .foregroundStyle(TF.settingsTextTertiary)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
     }
 
-    private func startEdit(index: Int) {
-        editTrigger = snippets[index].trigger
-        editValue = snippets[index].value
-        editingIndex = index
+    private func triggerTag(trigger: String, replacement: String) -> some View {
+        HStack(spacing: 4) {
+            Text(trigger)
+                .font(.system(size: 11))
+                .foregroundStyle(TF.settingsTextSecondary)
+            Button {
+                removeTrigger(trigger: trigger, replacement: replacement)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(TF.settingsTextTertiary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6).fill(TF.settingsBg)
+        )
     }
 
-    private func commitEdit() {
-        guard let index = editingIndex else { return }
-        let trigger = editTrigger.trimmingCharacters(in: .whitespaces)
-        let value = editValue.trimmingCharacters(in: .whitespaces)
-        guard !trigger.isEmpty, !value.isEmpty else { return }
-        snippets[index] = (trigger: trigger, value: value)
+    // MARK: - Group Actions
+
+    private func startGroupEdit(replacement: String) {
+        editReplacementText = replacement
+        editingGroupReplacement = replacement
+    }
+
+    private func commitGroupEdit(oldReplacement: String) {
+        let newReplacement = editReplacementText.trimmingCharacters(in: .whitespaces)
+        guard !newReplacement.isEmpty, newReplacement != oldReplacement else {
+            editingGroupReplacement = nil
+            return
+        }
+        for i in snippets.indices {
+            if snippets[i].value == oldReplacement {
+                snippets[i] = (trigger: snippets[i].trigger, value: newReplacement)
+            }
+        }
         SnippetStorage.save(snippets)
-        editingIndex = nil
+        editingGroupReplacement = nil
     }
 
-    private func cancelEdit() {
-        editingIndex = nil
+    private func removeGroup(replacement: String) {
+        snippets.removeAll { $0.value == replacement }
+        SnippetStorage.save(snippets)
+    }
+
+    private func removeTrigger(trigger: String, replacement: String) {
+        if let idx = snippets.firstIndex(where: { $0.trigger == trigger && $0.value == replacement }) {
+            snippets.remove(at: idx)
+            SnippetStorage.save(snippets)
+        }
+    }
+
+    private func addTriggerToGroup(replacement: String) {
+        let trigger = (newTriggerTexts[replacement] ?? "").trimmingCharacters(in: .whitespaces)
+        guard !trigger.isEmpty else { return }
+        guard !snippets.contains(where: { $0.trigger.lowercased() == trigger.lowercased() }) else {
+            newTriggerTexts[replacement] = ""
+            return
+        }
+        snippets.append((trigger: trigger, value: replacement))
+        SnippetStorage.save(snippets)
+        newTriggerTexts[replacement] = ""
     }
 
     // MARK: - Actions
@@ -380,12 +504,6 @@ struct VocabularyTab: View {
         SnippetStorage.save(snippets)
         newTrigger = ""
         newValue = ""
-    }
-
-    private func removeSnippet(at index: Int) {
-        guard snippets.indices.contains(index) else { return }
-        snippets.remove(at: index)
-        SnippetStorage.save(snippets)
     }
 
 }

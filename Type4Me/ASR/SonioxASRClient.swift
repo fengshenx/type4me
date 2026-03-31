@@ -68,7 +68,7 @@ actor SonioxASRClient: SpeechRecognizer {
         let url = try SonioxProtocol.buildWebSocketURL()
         let gate = SonioxConnectionGate()
         let delegate = SonioxWebSocketDelegate(connectionGate: gate)
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let session = URLSession(configuration: options.urlSessionConfiguration, delegate: delegate, delegateQueue: nil)
         let task = session.webSocketTask(with: url)
         task.resume()
 
@@ -98,8 +98,8 @@ actor SonioxASRClient: SpeechRecognizer {
 
     func sendAudio(_ data: Data) async throws {
         guard let task = webSocketTask else { return }
-        audioPacketCount += 1
         try await task.send(.data(data))
+        audioPacketCount += 1
     }
 
     func endAudio() async throws {

@@ -18,8 +18,9 @@ struct OpenAIASRConfig: ASRProviderConfig, Sendable {
                 FieldOption(value: "whisper-1", label: "Whisper ($0.36/hr)"),
             ]
         ),
-        CredentialField(key: "baseURL", label: "Base URL", placeholder: "https://api.openai.com/v1", isSecure: false, isOptional: true, defaultValue: "https://api.openai.com/v1"),
     ]
+
+    private static let defaultBaseURL = "https://api.openai.com/v1"
 
     let apiKey: String
     let model: String
@@ -33,7 +34,7 @@ struct OpenAIASRConfig: ASRProviderConfig, Sendable {
             : Self.defaultModel
         self.baseURL = credentials["baseURL"]?.isEmpty == false
             ? credentials["baseURL"]!
-            : "https://api.openai.com/v1"
+            : Self.defaultBaseURL
     }
 
     func toCredentials() -> [String: String] {

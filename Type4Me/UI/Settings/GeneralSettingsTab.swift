@@ -19,6 +19,7 @@ struct GeneralSettingsTab: View, SettingsCardHelpers {
     @AppStorage("tf_escAbortEnabled") private var escAbortEnabled = true
     @AppStorage("tf_preserveClipboard") private var preserveClipboard = true
     @AppStorage("tf_showDockIcon") private var showDockIcon = true
+    @AppStorage("tf_bypassProxy") private var bypassProxy = "off"
 
     @State private var hasMic = false
     @State private var hasAccessibility = false
@@ -129,6 +130,34 @@ struct GeneralSettingsTab: View, SettingsCardHelpers {
                         hasAccessibility = AXIsProcessTrustedWithOptions(options)
                     }
                 }
+            }
+
+            Spacer().frame(height: 16)
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // CARD 4: 高级设置
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+            settingsGroupCard(L("高级设置", "Advanced"), icon: "wrench.and.screwdriver") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(L("绕过系统代理", "Bypass System Proxy").uppercased())
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(0.8)
+                        .foregroundStyle(TF.settingsTextTertiary)
+                    settingsDropdown(
+                        selection: $bypassProxy,
+                        options: [
+                            ("off", L("关闭", "Off")),
+                            ("all", L("全局绕过", "All Connections")),
+                            ("asr", L("语音识别绕过", "ASR Only")),
+                            ("llm", L("文本处理 LLM 绕过", "LLM Only")),
+                        ]
+                    )
+                    Text(L("不经过代理软件，直连对应服务器", "Connect directly to servers, bypassing proxy"))
+                        .font(.system(size: 10))
+                        .foregroundStyle(TF.settingsTextTertiary)
+                }
+                .padding(.vertical, 6)
             }
 
         }

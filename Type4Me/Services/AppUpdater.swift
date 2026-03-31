@@ -400,23 +400,29 @@ final class AppUpdater {
             rm -rf "$TEMP_LOCAL"
         fi
 
-        # Code sign (temporarily move server dists to avoid signing conflicts)
-        echo "Signing with identity: $SIGNING_IDENTITY"
-        SERVER_TEMP=""
-        if [ -d "$APP_PATH/Contents/MacOS/sensevoice-server-dist" ]; then
-            SERVER_TEMP="$(mktemp -d)"
-            for item in sensevoice-server-dist sensevoice-server qwen3-asr-server-dist qwen3-asr-server; do
-                [ -e "$APP_PATH/Contents/MacOS/$item" ] && mv "$APP_PATH/Contents/MacOS/$item" "$SERVER_TEMP/"
-            done
-        fi
+        # Code sign only if a real signing identity is available (not ad-hoc).
+        # The DMG already contains a properly signed app; re-signing with "-"
+        # would strip the original signature and trigger Gatekeeper "damaged" errors.
+        if [ "$SIGNING_IDENTITY" != "-" ] && [ -n "$SIGNING_IDENTITY" ]; then
+            echo "Signing with identity: $SIGNING_IDENTITY"
+            SERVER_TEMP=""
+            if [ -d "$APP_PATH/Contents/MacOS/sensevoice-server-dist" ]; then
+                SERVER_TEMP="$(mktemp -d)"
+                for item in sensevoice-server-dist sensevoice-server qwen3-asr-server-dist qwen3-asr-server; do
+                    [ -e "$APP_PATH/Contents/MacOS/$item" ] && mv "$APP_PATH/Contents/MacOS/$item" "$SERVER_TEMP/"
+                done
+            fi
 
-        codesign -f -s "$SIGNING_IDENTITY" "$APP_PATH" 2>&1 || echo "Warning: signing failed, continuing..."
+            codesign -f -s "$SIGNING_IDENTITY" "$APP_PATH" 2>&1 || echo "Warning: signing failed, continuing..."
 
-        if [ -n "$SERVER_TEMP" ] && [ -d "$SERVER_TEMP" ]; then
-            for item in sensevoice-server-dist sensevoice-server qwen3-asr-server-dist qwen3-asr-server; do
-                [ -e "$SERVER_TEMP/$item" ] && mv "$SERVER_TEMP/$item" "$APP_PATH/Contents/MacOS/"
-            done
-            rm -rf "$SERVER_TEMP"
+            if [ -n "$SERVER_TEMP" ] && [ -d "$SERVER_TEMP" ]; then
+                for item in sensevoice-server-dist sensevoice-server qwen3-asr-server-dist qwen3-asr-server; do
+                    [ -e "$SERVER_TEMP/$item" ] && mv "$SERVER_TEMP/$item" "$APP_PATH/Contents/MacOS/"
+                done
+                rm -rf "$SERVER_TEMP"
+            fi
+        else
+            echo "Skipping code signing (no developer identity, preserving original signature)"
         fi
 
         # Remove quarantine

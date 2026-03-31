@@ -10,13 +10,22 @@ actor DoubaoChatClient: LLMClient {
         self.provider = provider
     }
 
+    private var session: URLSession {
+        if ProxyBypassMode.current.bypassLLM {
+            let config = URLSessionConfiguration.default
+            config.connectionProxyDictionary = [:]
+            return URLSession(configuration: config)
+        }
+        return session
+    }
+
     /// Pre-establish TCP+TLS connection so the first real request skips handshake.
     func warmUp(baseURL: String) async {
         guard let url = URL(string: baseURL) else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 5
-        _ = try? await URLSession.shared.data(for: request)
+        _ = try? await session.data(for: request)
         logger.info("LLM connection pre-warmed to \(baseURL)")
     }
 
@@ -67,7 +76,7 @@ actor DoubaoChatClient: LLMClient {
     // MARK: - Streaming (SSE)
 
     private func processStreaming(request: URLRequest, model: String) async throws -> String {
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        let (bytes, response) = try await session.bytes(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw LLMError.requestFailed(0)
         }
@@ -107,7 +116,7 @@ actor DoubaoChatClient: LLMClient {
     // MARK: - Non-streaming (single JSON response)
 
     private func processNonStreaming(request: URLRequest, model: String) async throws -> String {
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw LLMError.requestFailed(0)
         }

@@ -6,6 +6,26 @@ struct ASRRequestOptions: Sendable, Equatable {
     var hotwords: [String] = []
     var boostingTableID: String?
     var contextHistoryLength: Int = 20
+    var bypassProxy: Bool = false
+
+    var urlSessionConfiguration: URLSessionConfiguration {
+        let config = URLSessionConfiguration.default
+        if bypassProxy {
+            config.connectionProxyDictionary = [:]
+        }
+        return config
+    }
+}
+
+enum ProxyBypassMode: String {
+    case off, all, asr, llm
+
+    static var current: ProxyBypassMode {
+        ProxyBypassMode(rawValue: UserDefaults.standard.string(forKey: "tf_bypassProxy") ?? "off") ?? .off
+    }
+
+    var bypassASR: Bool { self == .all || self == .asr }
+    var bypassLLM: Bool { self == .all || self == .llm }
 }
 
 struct RecognitionTranscript: Sendable, Equatable {
