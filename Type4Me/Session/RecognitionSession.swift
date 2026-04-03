@@ -49,13 +49,24 @@ actor RecognitionSession {
         category: "RecognitionSession"
     )
 
+    /// Whether the active session is using the Cloud provider (ASR + LLM proxied).
+    private var isCloudMode: Bool { activeProvider == .cloud }
+
     /// Return the appropriate LLM client for the currently selected provider.
     private func currentLLMClient() -> any LLMClient {
+        if isCloudMode { return CloudLLMClient() }
         let provider = KeychainService.selectedLLMProvider
         if provider == .claude {
             return ClaudeChatClient()
         }
         return DoubaoChatClient(provider: provider)
+    }
+
+    /// LLM config: Cloud mode uses a dummy config (CloudLLMClient ignores it);
+    /// BYOK mode loads real credentials from KeychainService.
+    private func loadEffectiveLLMConfig() -> LLMConfig? {
+        if isCloudMode { return LLMConfig(apiKey: "", model: "cloud") }
+        return KeychainService.loadLLMConfig()
     }
 
     /// Pre-initialize audio subsystem so the first recording starts instantly.
@@ -138,6 +149,22 @@ actor RecognitionSession {
 
         let provider = KeychainService.selectedASRProvider
         activeProvider = provider
+
+        // Cloud quota gate: refuse to start if free quota is exhausted
+        if provider == .cloud {
+            let canUse = await CloudQuotaManager.shared.canUse()
+            if !canUse {
+                SoundFeedback.playError()
+                state = .idle
+                onASREvent?(.error(NSError(
+                    domain: "Type4Me", code: -10,
+                    userInfo: [NSLocalizedDescriptionKey: L("免费额度已用完", "Free quota exhausted")]
+                )))
+                onASREvent?(.completed)
+                return
+            }
+        }
+
         let effectiveMode = ASRProviderRegistry.resolvedMode(for: mode, provider: provider)
         sessionGeneration &+= 1
         let myGeneration = sessionGeneration
@@ -350,7 +377,7 @@ actor RecognitionSession {
         DebugFileLogger.log("ASR pipeline live, flushed \(bufferedChunks.count) buffered chunks")
 
         // Pre-warm LLM connection for modes with post-processing
-        if !currentMode.prompt.isEmpty, let llmConfig = KeychainService.loadLLMConfig() {
+        if !currentMode.prompt.isEmpty, let llmConfig = loadEffectiveLLMConfig() {
             let client = currentLLMClient()
             Task { await client.warmUp(baseURL: llmConfig.baseURL) }
         }
@@ -481,7 +508,7 @@ actor RecognitionSession {
                     earlyLLMTask = specTask
                     state = .postProcessing
                     DebugFileLogger.log("stop: reusing speculative LLM +\(ContinuousClock.now - stopT0)")
-                } else if let llmConfig = KeychainService.loadLLMConfig() {
+                } else if let llmConfig = loadEffectiveLLMConfig() {
                     // Final transcript differs from speculative input (tail words arrived),
                     // discard stale result and fire fresh LLM with complete text.
                     speculativeLLMTask?.cancel()
@@ -602,9 +629,10 @@ actor RecognitionSession {
 
                 if let result = earlyResult, !result.isEmpty {
                     DebugFileLogger.log("stop: early LLM result received \(result.count) chars +\(ContinuousClock.now - stopT0)")
-                    processedText = result
-                    finalText = result
-                    onASREvent?(.processingResult(text: result))
+                    let cleaned = result.collapsingExtraSpaces
+                    processedText = cleaned
+                    finalText = cleaned
+                    onASREvent?(.processingResult(text: cleaned))
                 } else {
                     let err = pendingLLMError ?? LLMError.emptyResponse(nil)
                     DebugFileLogger.log("stop: early LLM failed, falling back to raw text: \(err)")
@@ -614,7 +642,7 @@ actor RecognitionSession {
                 }
             } else if needsLLM {
                 state = .postProcessing
-                if let llmConfig = KeychainService.loadLLMConfig() {
+                if let llmConfig = loadEffectiveLLMConfig() {
                     DebugFileLogger.log("stop: sync LLM firing mode=\(currentMode.name) model=\(llmConfig.model) with \(finalText.count) chars")
                     let client = currentLLMClient()
                     let prompt = promptContext.expandContextVariables(currentMode.prompt)
@@ -650,9 +678,10 @@ actor RecognitionSession {
                     }
 
                     if let result = llmResult {
-                        processedText = result
-                        finalText = result
-                        onASREvent?(.processingResult(text: result))
+                        let cleaned = result.collapsingExtraSpaces
+                        processedText = cleaned
+                        finalText = cleaned
+                        onASREvent?(.processingResult(text: cleaned))
                     } else {
                         llmFailed = true
                         onASREvent?(.processingResult(text: rawText))
@@ -691,6 +720,11 @@ actor RecognitionSession {
                 }
             }
             onASREvent?(.finalized(text: finalText, injection: injectionOutcome))
+
+            // Cloud quota: deduct chars locally for responsive UI feedback
+            if isCloudMode {
+                await CloudQuotaManager.shared.deductLocal(chars: finalText.count)
+            }
 
             // Save to history
             let recordId = UUID().uuidString
@@ -933,7 +967,7 @@ actor RecognitionSession {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         text = SnippetStorage.applyEffective(to: text)
         guard !text.isEmpty, text != speculativeLLMText else { return }
-        guard let llmConfig = KeychainService.loadLLMConfig() else { return }
+        guard let llmConfig = loadEffectiveLLMConfig() else { return }
 
         // Cancel previous speculative call if text changed
         speculativeLLMTask?.cancel()
@@ -1101,4 +1135,14 @@ actor RecognitionSession {
         SystemVolumeManager.restore()
     }
 
+}
+
+// MARK: - String helpers
+
+private extension String {
+    /// Collapse runs of 2+ spaces into a single space.
+    /// LLMs sometimes insert extra spaces between CJK and Latin text.
+    var collapsingExtraSpaces: String {
+        replacingOccurrences(of: " {2,}", with: " ", options: .regularExpression)
+    }
 }

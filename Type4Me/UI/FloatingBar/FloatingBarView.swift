@@ -29,6 +29,8 @@ struct FloatingBarView<S: FloatingBarState>: View {
 
     let state: S
 
+    @ObservedObject private var cloudQuota = CloudQuotaManager.shared
+
     @State private var breathe = false
     @State private var doneGlow = true
     /// High-water mark: only grows during recording, never shrinks (prevents ASR correction jitter)
@@ -59,11 +61,14 @@ struct FloatingBarView<S: FloatingBarState>: View {
     var body: some View {
         Group {
             if state.barPhase != .hidden {
-                capsuleBar
-                    .transition(.asymmetric(
-                        insertion: .scale(scale: 0.92).combined(with: .opacity),
-                        removal: .opacity
-                    ))
+                VStack(spacing: 4) {
+                    capsuleBar
+                    cloudQuotaLabel
+                }
+                .transition(.asymmetric(
+                    insertion: .scale(scale: 0.92).combined(with: .opacity),
+                    removal: .opacity
+                ))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -225,6 +230,30 @@ struct FloatingBarView<S: FloatingBarState>: View {
                 .lineLimit(1)
         }
         .padding(.horizontal, 14)
+    }
+
+    // MARK: - Cloud Quota Label
+
+    @ViewBuilder
+    private var cloudQuotaLabel: some View {
+        if KeychainService.selectedASRProvider == .cloud,
+           !cloudQuota.isPaid,
+           state.barPhase == .recording || state.barPhase == .processing {
+            let remaining = cloudQuota.freeCharsRemaining
+            let color: Color = remaining == 0
+                ? TF.settingsAccentRed
+                : remaining < 500 ? .orange : .white.opacity(0.5)
+            let text = remaining == 0
+                ? L("免费额度已用完", "Free quota used up")
+                : L("剩余 \(remaining) 字", "\(remaining) chars left")
+            Text(text)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(color)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .background(Color(white: 0.08, opacity: 0.7))
+                .clipShape(Capsule())
+        }
     }
 
     // MARK: - Background & Border
