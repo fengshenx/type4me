@@ -45,10 +45,9 @@ enum DeepgramProtocol {
             queryItems.append(URLQueryItem(name: "numerals", value: "true"))
         }
 
-        var seen = Set<String>()
-        let hotwords = (config.hotwords + options.hotwords)
+        let hotwords = options.hotwords
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
+            .filter { !$0.isEmpty }
             .prefix(maxURLKeyterms)
 
         if config.model.lowercased().hasPrefix("nova-3") {

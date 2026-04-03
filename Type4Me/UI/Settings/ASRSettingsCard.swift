@@ -152,31 +152,7 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
                         .foregroundStyle(TF.settingsTextSecondary)
                         .padding(.vertical, 8)
                 } else if hasASRCredentials && !isEditingASR {
-                    let gridFields = currentASRFields.filter { !$0.isTextArea }
-                    let textAreaFields = currentASRFields.filter { $0.isTextArea }
-                    credentialSummaryCard(rows: asrSummaryRows(for: gridFields))
-                    ForEach(textAreaFields) { field in
-                        SettingsDivider()
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(field.label.uppercased())
-                                .font(.system(size: 10, weight: .semibold))
-                                .tracking(0.8)
-                                .foregroundStyle(TF.settingsTextTertiary)
-                            if let note = field.note {
-                                Text(note)
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(TF.settingsTextTertiary)
-                            }
-                            let val = savedASRValues[field.key] ?? asrCredentialValues[field.key] ?? ""
-                            Text(val.isEmpty ? field.placeholder : val)
-                                .font(.system(size: 12))
-                                .foregroundStyle(val.isEmpty ? TF.settingsTextTertiary.opacity(0.6) : TF.settingsTextSecondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(12)
-                                .background(RoundedRectangle(cornerRadius: 8).fill(TF.settingsCardAlt))
-                        }
-                        .padding(.vertical, 6)
-                    }
+                    credentialSummaryCard(rows: asrSummaryRows)
                 } else {
                     dynamicCredentialFields
                 }
@@ -327,11 +303,9 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
     // MARK: - Credential Fields
 
     private var dynamicCredentialFields: some View {
-        let allFields = currentASRFields
-        let gridFields = allFields.filter { !$0.isTextArea }
-        let textAreaFields = allFields.filter { $0.isTextArea }
-        let rows = stride(from: 0, to: gridFields.count, by: 2).map { i in
-            Array(gridFields[i..<min(i+2, gridFields.count)])
+        let fields = currentASRFields
+        let rows = stride(from: 0, to: fields.count, by: 2).map { i in
+            Array(fields[i..<min(i+2, fields.count)])
         }
         return VStack(spacing: 0) {
             ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
@@ -346,33 +320,12 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
                     }
                 }
             }
-            ForEach(textAreaFields) { field in
-                SettingsDivider()
-                credentialFieldRow(field)
-            }
         }
     }
 
     @ViewBuilder
     private func credentialFieldRow(_ field: CredentialField) -> some View {
-        if field.isTextArea {
-            let binding = Binding<String>(
-                get: {
-                    let val = asrCredentialValues[field.key] ?? ""
-                    return val.isEmpty ? (savedASRValues[field.key] ?? field.defaultValue) : val
-                },
-                set: {
-                    asrCredentialValues[field.key] = $0
-                    editedFields.insert(field.key)
-                }
-            )
-            let resetAction: (() -> Void)? = field.key == "hotwords" ? {
-                let words = HotwordStorage.loadEffective().joined(separator: ", ")
-                asrCredentialValues[field.key] = words
-                editedFields.insert(field.key)
-            } : nil
-            settingsTextAreaField(field.label, text: binding, prompt: field.placeholder, note: field.note, onReset: resetAction, wordLimit: field.wordLimit)
-        } else if !field.options.isEmpty {
+        if !field.options.isEmpty {
             let pickerBinding = Binding<String>(
                 get: {
                     let val = asrCredentialValues[field.key] ?? ""
@@ -413,9 +366,9 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
         }
     }
 
-    private func asrSummaryRows(for fields: [CredentialField]) -> [(String, String)] {
+    private var asrSummaryRows: [(String, String)] {
         var rows: [(String, String)] = []
-        for field in fields {
+        for field in currentASRFields {
             let val = asrCredentialValues[field.key] ?? ""
             guard !val.isEmpty else { continue }
             let displayValue: String
@@ -665,10 +618,7 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
     private func loadASRCredentialsForProvider(_ provider: ASRProvider) {
         testTask?.cancel()
         editedFields = []
-        if var values = KeychainService.loadASRCredentials(for: provider) {
-            if provider == .deepgram && (values["hotwords"] ?? "").isEmpty {
-                values["hotwords"] = HotwordStorage.loadEffective().joined(separator: ", ")
-            }
+        if let values = KeychainService.loadASRCredentials(for: provider) {
             asrCredentialValues = values
             savedASRValues = values
             hasStoredASR = true
@@ -678,9 +628,6 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
             let fields = ASRProviderRegistry.configType(for: provider)?.credentialFields ?? []
             for field in fields where !field.defaultValue.isEmpty {
                 defaults[field.key] = field.defaultValue
-            }
-            if provider == .deepgram {
-                defaults["hotwords"] = HotwordStorage.loadEffective().joined(separator: ", ")
             }
             asrCredentialValues = defaults
             savedASRValues = [:]
