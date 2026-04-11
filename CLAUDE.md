@@ -21,11 +21,47 @@ swift build -c release
 
 The built binary is at `.build/release/Type4Me`. To package it as a `.app` bundle, see `scripts/deploy.sh`.
 
+## Build Variants
+
+Three product variants built from the same codebase via conditional compilation flags:
+
+| Variant | `HAS_SHERPA_ONNX` | `HAS_CLOUD_SUBSCRIPTION` | Arch | Description |
+|---------|---|---|---|---|
+| **pure** | no | no | universal | Open-source cloud edition (BYOK API keys) |
+| **official** | no | yes | universal | Official member edition (subscription + cloud proxy) |
+| **local** | yes | no | arm64 | Open-source local edition (bundled SenseVoice + Qwen3-ASR) |
+
+### How it works
+
+- `HAS_SHERPA_ONNX`: controlled by `Frameworks/sherpa-onnx.xcframework/Info.plist` presence (existing pattern)
+- `HAS_CLOUD_SUBSCRIPTION`: controlled by `Type4Me/CloudSubscription/marker` file presence
+- `Package.swift` detects these files at manifest evaluation time and sets compiler defines + source excludes
+- `build-dmg.sh` temporarily hides marker files to build each variant
+
+### Build commands
+
+```bash
+# Open-source cloud edition (no subscription, no local ASR)
+VARIANT=pure bash scripts/build-dmg.sh
+
+# Official member edition (with subscription system)
+VARIANT=official bash scripts/build-dmg.sh
+
+# Open-source local edition (bundled models, Apple Silicon only)
+VARIANT=local bash scripts/build-dmg.sh
+```
+
+### Subscription code location
+
+All subscription/cloud-proxy code lives in `Type4Me/CloudSubscription/` (13 files). Main code uses `#if HAS_CLOUD_SUBSCRIPTION` guards at ~11 touch points. When the marker is absent, the directory is excluded from compilation entirely.
+
+**Important**: SPM caches manifest evaluation in `~/Library/Caches/org.swift.swiftpm`. When switching variants manually (not via build-dmg.sh), clear this cache: `rm -rf .build ~/Library/Caches/org.swift.swiftpm`
+
 ## ASR Provider Architecture
 
 Multi-provider ASR support via `ASRProvider` enum + `ASRProviderConfig` protocol + `ASRProviderRegistry`.
 
-- `ASRProvider` enum: 15 cases (sherpa/openai/azure/google/aws/deepgram/assemblyai/elevenlabs/volcano/aliyun/bailian/tencent/baidu/iflytek/custom)
+- `ASRProvider` enum: 15 cases + conditional `cloud` case (sherpa/openai/azure/google/aws/deepgram/assemblyai/elevenlabs/volcano/aliyun/bailian/tencent/baidu/iflytek/custom, plus `cloud` when `HAS_CLOUD_SUBSCRIPTION`)
 - Each provider has its own Config type (e.g., `SherpaASRConfig`, `VolcanoASRConfig`) defining `credentialFields` for dynamic UI rendering
 - `ASRProviderRegistry`: maps provider to config type + client factory; `capabilities` indicates availability and streaming support
 - **Fully implemented**: sherpa (local, batch), volcano (streaming), deepgram (streaming), assemblyai (streaming), elevenlabs (streaming), soniox (streaming), bailian (streaming), baidu (streaming), openai (batch)
