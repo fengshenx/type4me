@@ -44,12 +44,25 @@ struct ModeStorage {
             if mode.id == ProcessingMode.translateId {
                 return migrateDefaultMode(mode, fallback: .translate)
             }
-            if mode.id == ProcessingMode.formalWriting.id {
-                return migrateSeededDefaultPrompt(
-                    mode,
-                    legacyPrompts: [ProcessingMode.legacyFormalWritingPromptTemplate],
-                    fallbackPrompt: ProcessingMode.formalWriting.prompt
-                )
+            if mode.id == ProcessingMode.formalWritingId {
+                let legacyPrompts: Set<String> = [
+                    ProcessingMode.legacyFormalWritingPromptTemplate,
+                    ProcessingMode.previousFormalWritingPromptTemplate,
+                ]
+                // Also detect v3 prompt (before single-point list fix) by unique substring
+                let isLegacy = legacyPrompts.contains(mode.prompt)
+                    || mode.prompt.contains("内容包含多个要点时")
+                var d = ProcessingMode.formalWriting
+                d.hotkeyCode = mode.hotkeyCode
+                d.hotkeyModifiers = mode.hotkeyModifiers
+                d.hotkeyStyle = mode.hotkeyStyle
+                // If user customized the prompt, keep theirs
+                if !isLegacy {
+                    d.name = mode.name
+                    d.processingLabel = mode.processingLabel
+                    d.prompt = mode.prompt
+                }
+                return d
             }
             if mode.id == ProcessingMode.translate.id {
                 return migrateSeededDefaultPrompt(
@@ -69,7 +82,7 @@ struct ModeStorage {
         }
 
         // Ensure required built-in modes always exist.
-        let resultIds = Set(result.map(\.id))
+        let resultIds = Set(result.map { $0.id })
         for builtin in ProcessingMode.builtins where !resultIds.contains(builtin.id) {
             if let idx = ProcessingMode.builtins.firstIndex(where: { $0.id == builtin.id }) {
                 let insertAt = min(idx, result.count)

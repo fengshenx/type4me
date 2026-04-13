@@ -7,7 +7,8 @@ struct ASRRequestOptions: Sendable, Equatable {
     var boostingTableID: String?
     var contextHistoryLength: Int = 20
     var bypassProxy: Bool = false
-
+    /// When set, ASR clients connect to this URL instead of their default endpoint.
+    var cloudProxyURL: String?
     var urlSessionConfiguration: URLSessionConfiguration {
         let config = URLSessionConfiguration.default
         if bypassProxy {
@@ -71,6 +72,7 @@ enum RecognitionEvent: Sendable {
     case error(Error)
     case completed
     case processingResult(text: String)
+    case processingLabelOverride(String)
     case finalized(text: String, injection: InjectionOutcome)
 }
 

@@ -75,6 +75,10 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
                 (L("可用模型", "Models"), L("查看", "view"), URL(string: "https://www.assemblyai.com/docs/getting-started/models")!),
                 ("API Key", L("获取", "get"), URL(string: "https://www.assemblyai.com/docs/faq/how-to-get-your-api-key")!),
             ]
+        case .elevenlabs:
+            return [
+                ("API Key", L("获取", "get"), URL(string: "https://elevenlabs.io/app/settings/api-keys")!),
+            ]
         case .soniox:
             return [
                 ("API Key", L("获取", "get"), URL(string: "https://console.soniox.com")!),
@@ -188,12 +192,6 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
                         .padding(.top, 4)
                 }
 
-                if let note = currentProviderNote {
-                    Text(note)
-                        .font(.system(size: 10))
-                        .foregroundStyle(TF.settingsTextTertiary)
-                        .padding(.top, 4)
-                }
 
 
             }
@@ -208,7 +206,7 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
 
     private static let recommendedProviders: [ASRProvider] = [.volcano, .soniox]
     #if HAS_SHERPA_ONNX
-    private static let localProviders: [ASRProvider] = [.apple, .sherpa]
+    private static let localProviders: [ASRProvider] = ModelManager.isQwen3ASRBundled ? [.apple, .sherpa] : [.apple]
     #else
     private static let localProviders: [ASRProvider] = [.apple]
     #endif
@@ -222,7 +220,13 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
             HStack(spacing: 10) {
                 let localSet = Set(Self.localProviders)
                 let availableSet = Set(ASRProvider.allCases
-                    .filter { localSet.contains($0) || (ASRProviderRegistry.entry(for: $0)?.isAvailable ?? false) })
+                    .filter { p in
+                        guard localSet.contains(p) || (ASRProviderRegistry.entry(for: p)?.isAvailable ?? false) else { return false }
+                        #if HAS_CLOUD_SUBSCRIPTION
+                        if p == .cloud { return false }
+                        #endif
+                        return true
+                    })
                 let recommended = Self.recommendedProviders.filter { availableSet.contains($0) }
                 let local = Self.localProviders.filter { availableSet.contains($0) }
                 let others = ASRProvider.allCases.filter { availableSet.contains($0) && !Self.recommendedProviders.contains($0) && !Self.localProviders.contains($0) }
@@ -289,6 +293,9 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
             if oldProvider == .sherpa && newProvider != .sherpa {
                 Task {
                     await SenseVoiceServerManager.shared.stopQwen3()
+                    #if HAS_SHERPA_ONNX
+                    SenseVoiceASRClient.releaseCachedModels()
+                    #endif
                     qwen3Running = false
                     serverRunning = false
                 }
@@ -401,109 +408,41 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
     }
 
     private var localModelSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             if localModelAvailable {
-                // SenseVoice row
-                HStack(spacing: 6) {
-                    HStack(spacing: 4) {
-                        Text("SenseVoice")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(TF.settingsText)
-                        Text("|")
-                            .font(.system(size: 10))
-                            .foregroundStyle(TF.settingsTextTertiary.opacity(0.5))
-                        Text(L("基础识别模型，流式识别，支持实时展示", "Base model, streaming ASR, real-time display"))
-                            .font(.system(size: 10))
-                            .foregroundStyle(TF.settingsTextTertiary)
+                HStack(spacing: 12) {
+                    // Left: 流式识别引擎 (always on)
+                    staticEngineBlock(
+                        icon: "waveform",
+                        name: "SenseVoice",
+                        subtitle: L("流式识别引擎", "Streaming Engine"),
+                        description: L("基础识别模型，流式识别，支持实时展示。内存占用约 500MB。",
+                                       "Base model, streaming ASR, real-time display. ~500MB memory.")
+                    )
+
+                    // Right: 精准识别引擎
+                    #if arch(arm64)
+                    if hasQwen3ASR {
+                        localEngineBlock(
+                            icon: "target",
+                            name: "Qwen3-ASR",
+                            subtitle: L("精准识别引擎", "Precision Engine"),
+                            description: L("识别完成后，对语音进行更准确的校准。内存占用约 4GB。",
+                                           "Post-recognition calibration for higher accuracy. ~4GB memory."),
+                            isRunning: qwen3Running,
+                            isToggling: qwen3Toggling,
+                            onStart: { toggleQwen3(true) },
+                            onStop: { toggleQwen3(false) }
+                        )
                     }
-                    Spacer()
-                    if svToggling {
-                        HStack(spacing: 4) {
-                            ProgressView().controlSize(.small)
-                            Text(L("启动中", "Starting"))
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(TF.settingsTextSecondary)
-                        }
-                    } else if serverRunning {
-                        HStack(spacing: 4) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 10))
-                                .foregroundStyle(TF.settingsAccentGreen)
-                            Text(L("运行中", "Running"))
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(TF.settingsAccentGreen)
-                        }
-                        Button(L("停止", "Stop")) { toggleSenseVoice(false) }
-                            .font(.system(size: 11, weight: .medium))
-                            .buttonStyle(.borderedProminent)
-                            .tint(TF.settingsAccentRed)
-                            .controlSize(.small)
-                    } else {
-                        Button(L("启动", "Start")) { toggleSenseVoice(true) }
-                            .font(.system(size: 11, weight: .medium))
-                            .buttonStyle(.borderedProminent)
-                            .tint(TF.settingsAccentAmber)
-                            .controlSize(.small)
-                    }
+                    #endif
                 }
 
-                // Qwen3-ASR row (Apple Silicon only)
-                #if arch(arm64)
-                if hasQwen3ASR {
-                    SettingsDivider()
-                    HStack(spacing: 6) {
-                        HStack(spacing: 4) {
-                            Text("Qwen3-ASR")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(TF.settingsText)
-                            Text("|")
-                                .font(.system(size: 10))
-                                .foregroundStyle(TF.settingsTextTertiary.opacity(0.5))
-                            Text(L("精准校验，建议搭配 SenseVoice", "Verification, best with SenseVoice"))
-                                .font(.system(size: 10))
-                                .foregroundStyle(TF.settingsTextTertiary)
-                        }
-                        Spacer()
-                        if qwen3Toggling {
-                            HStack(spacing: 4) {
-                                ProgressView().controlSize(.small)
-                                Text(L("启动中", "Starting"))
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundStyle(TF.settingsTextSecondary)
-                            }
-                        } else if qwen3Running {
-                            HStack(spacing: 4) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(TF.settingsAccentGreen)
-                                Text(L("运行中", "Running"))
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundStyle(TF.settingsAccentGreen)
-                            }
-                            Button(L("停止", "Stop")) { toggleQwen3(false) }
-                                .font(.system(size: 11, weight: .medium))
-                                .buttonStyle(.borderedProminent)
-                                .tint(TF.settingsAccentRed)
-                                .controlSize(.small)
-                        } else {
-                            Button(L("启动", "Start")) { toggleQwen3(true) }
-                                .font(.system(size: 11, weight: .medium))
-                                .buttonStyle(.borderedProminent)
-                                .tint(TF.settingsAccentAmber)
-                                .controlSize(.small)
-                        }
-                    }
-                }
-                #endif
-
-                // Test button at bottom
-                SettingsDivider()
                 HStack {
                     Spacer()
                     testButton(L("测试连接", "Test"), status: asrTestStatus) { testLocalModel() }
                 }
             } else {
-                // Lite version: no model bundled
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
                         Image(systemName: "exclamationmark.triangle")
@@ -516,22 +455,126 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
                            "This is the cloud-only version. Download the full DMG with embedded model for local ASR."))
                         .font(.system(size: 10))
                         .foregroundStyle(TF.settingsTextSecondary)
-                    Button {
-                        NSWorkspace.shared.open(URL(string: "https://github.com/joewongjc/type4me/releases")!)
-                    } label: {
-                        HStack(spacing: 2) {
-                            Text(L("前往下载完整版", "Download Full Version"))
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 8))
-                        }
-                        .foregroundStyle(TF.settingsAccentBlue)
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .medium))
                 }
             }
         }
         .padding(.vertical, 8)
+    }
+
+    private func staticEngineBlock(
+        icon: String,
+        name: String,
+        subtitle: String,
+        description: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 16))
+                    .foregroundStyle(.white)
+                    .frame(width: 32, height: 32)
+                    .background(RoundedRectangle(cornerRadius: 7).fill(TF.settingsAccentGreen))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(TF.settingsText)
+                    Text(subtitle)
+                        .font(.system(size: 10))
+                        .foregroundStyle(TF.settingsTextTertiary)
+                }
+            }
+
+            Text(description)
+                .font(.system(size: 10))
+                .foregroundStyle(TF.settingsTextSecondary)
+                .lineSpacing(2)
+
+            HStack {
+                Spacer()
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(TF.settingsAccentGreen)
+                    Text(L("始终运行", "Always On"))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(TF.settingsAccentGreen)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(TF.settingsCardAlt))
+    }
+
+    private func localEngineBlock(
+        icon: String,
+        name: String,
+        subtitle: String,
+        description: String,
+        isRunning: Bool,
+        isToggling: Bool,
+        onStart: @escaping () -> Void,
+        onStop: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 16))
+                    .foregroundStyle(.white)
+                    .frame(width: 32, height: 32)
+                    .background(RoundedRectangle(cornerRadius: 7).fill(isRunning ? TF.settingsAccentGreen : TF.settingsTextTertiary))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(TF.settingsText)
+                    Text(subtitle)
+                        .font(.system(size: 10))
+                        .foregroundStyle(TF.settingsTextTertiary)
+                }
+            }
+
+            Text(description)
+                .font(.system(size: 10))
+                .foregroundStyle(TF.settingsTextSecondary)
+                .lineSpacing(2)
+
+            HStack {
+                Spacer()
+                if isToggling {
+                    HStack(spacing: 4) {
+                        ProgressView().controlSize(.small)
+                        Text(L("启动中", "Starting"))
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(TF.settingsTextSecondary)
+                    }
+                } else if isRunning {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(TF.settingsAccentGreen)
+                        Text(L("运行中", "Running"))
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(TF.settingsAccentGreen)
+                    }
+                    Button(L("停止", "Stop")) { onStop() }
+                        .font(.system(size: 11, weight: .medium))
+                        .buttonStyle(.borderedProminent)
+                        .tint(TF.settingsAccentRed)
+                        .controlSize(.small)
+                } else {
+                    Button(L("启动", "Start")) { onStart() }
+                        .font(.system(size: 11, weight: .medium))
+                        .buttonStyle(.borderedProminent)
+                        .tint(TF.settingsAccentAmber)
+                        .controlSize(.small)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(TF.settingsCardAlt))
     }
 
     private func refreshModelStatus() {
@@ -562,8 +605,9 @@ struct ASRSettingsCard: View, SettingsCardHelpers {
     }
 
     private func toggleSenseVoice(_ enabled: Bool) {
-        // SenseVoice Python server removed; native sherpa-onnx handles SenseVoice now.
+        // SenseVoice is native sherpa-onnx, no server process to manage.
         sensevoiceEnabled = enabled
+        serverRunning = enabled
     }
 
     private func toggleQwen3(_ enabled: Bool) {

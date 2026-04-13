@@ -12,6 +12,7 @@ struct HistoryRecord: Identifiable, Hashable {
     let finalText: String
     let status: String
     let characterCount: Int?
+    let asrProvider: String?
 }
 
 // MARK: - View
@@ -30,6 +31,9 @@ struct HistoryTab: View {
     @State private var statistics: HistoryStore.Statistics?
 
     private static let pageSize = 20
+
+    // Correction
+    @State private var correctionRecord: HistoryRecord? = nil
 
     // Export
     @State private var showExportPopover = false
@@ -187,6 +191,9 @@ struct HistoryTab: View {
                 await loadRecords()
                 await loadStatistics()
             }
+        }
+        .sheet(item: $correctionRecord) { record in
+            QuickCorrectionSheet(text: record.rawText)
         }
     }
 
@@ -383,6 +390,9 @@ struct HistoryTab: View {
                 if let mode = record.processingMode {
                     Label(mode, systemImage: "text.bubble")
                 }
+                if let provider = record.asrProvider {
+                    Label(provider, systemImage: "mic")
+                }
                 Spacer()
             }
             .font(.system(size: 10))
@@ -413,6 +423,16 @@ struct HistoryTab: View {
                 Spacer()
 
                 Button {
+                    correctionRecord = record
+                } label: {
+                    Label(L("纠错", "Correct"), systemImage: "character.textbox")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(TF.settingsAccentAmber)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(record.finalText, forType: .string)
                     copiedId = record.id
@@ -426,6 +446,7 @@ struct HistoryTab: View {
                     )
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(copiedId == record.id ? TF.settingsAccentGreen : TF.settingsTextSecondary)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
@@ -438,6 +459,7 @@ struct HistoryTab: View {
                     Label(L("删除", "Delete"), systemImage: "trash")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(TF.settingsAccentRed.opacity(0.7))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }

@@ -42,13 +42,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     let appState = AppState()
     let appUpdater = AppUpdater()
-    private let startSoundDelay: Duration = .milliseconds(200)
+    /// Computed dynamically per recording based on audio device topology.
     private var floatingBarController: FloatingBarController?
     private let hotkeyManager = HotkeyManager()
     private let session = RecognitionSession()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSLog("[Type4Me] applicationDidFinishLaunching")
+        #if HAS_CLOUD_SUBSCRIPTION
+        AppEditionMigration.migrateIfNeeded()
+        #endif
         // Show or hide Dock icon based on user preference
         let showDock = UserDefaults.standard.object(forKey: "tf_showDockIcon") as? Bool ?? true
         NSApp.setActivationPolicy(showDock ? .regular : .accessory)
@@ -69,9 +72,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 历史记录字数迁移（用 session 自带的 historyStore，迁移后 UI 能刷新）
         Task { await session.historyStore.migrateCharacterCounts() }
         let appState = self.appState
-        let startSoundDelay = self.startSoundDelay
 
         SoundFeedback.warmUp()
+        AudioKeepAliveManager.syncState()
 
         // Pre-warm audio subsystem so the first recording starts instantly
         Task { await session.warmUp() }
@@ -92,15 +95,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         DebugFileLogger.log("ready event received, current barPhase=\(String(describing: appState.barPhase))")
                         appState.markRecordingReady()
                         Task { @MainActor in
-                            NSLog("[Type4Me] playStart scheduled")
-                            DebugFileLogger.log("playStart scheduled delayMs=200")
-                            try? await Task.sleep(for: startSoundDelay)
                             guard appState.barPhase == .recording else {
                                 DebugFileLogger.log("playStart aborted, barPhase=\(String(describing: appState.barPhase))")
                                 return
                             }
                             NSLog("[Type4Me] playStart firing")
                             DebugFileLogger.log("playStart firing")
+                            // BT wake-up preamble is baked into the sound buffer itself.
                             SoundFeedback.playStart()
                             // Lower volume after start sound finishes playing
                             let targetVolumePercent = UserDefaults.standard.integer(forKey: "tf_volumeReduction")
@@ -116,6 +117,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         appState.stopRecording()
                         self.hotkeyManager.isProcessing = false
                         self.safeResetHotkeyState()
+                    case .processingLabelOverride(let label):
+                        appState.processingLabelOverride = label
                     case .processingResult(let text):
                         appState.showProcessingResult(text)
                         self.hotkeyManager.isProcessing = true
@@ -186,7 +189,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Show setup wizard on first launch
-        if !appState.hasCompletedSetup {
+        #if HAS_CLOUD_SUBSCRIPTION
+        let needsSetup = !appState.hasCompletedSetup || appState.appEdition == nil
+        #else
+        let needsSetup = !appState.hasCompletedSetup
+        #endif
+        if needsSetup {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 MainActor.assumeIsolated {
                     _ = NSApp.sendAction(Selector(("showSetupWindow:")), to: nil, from: nil)
@@ -245,17 +253,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 onStart: { [weak self] in
                     guard let self else { return }
 
+                    let phase = MainActor.assumeIsolated { self.appState.barPhase }
+
                     // Safety: if already recording, the toggle state is out of sync.
                     // Redirect to stop so we don't discard accumulated text.
-                    let alreadyRecording = MainActor.assumeIsolated {
-                        self.appState.barPhase == .recording || self.appState.barPhase == .preparing
-                    }
-                    if alreadyRecording {
+                    if phase == .recording || phase == .preparing {
                         NSLog("[Type4Me] >>> HOTKEY: toggle desync – onStart while recording, redirecting to STOP")
                         DebugFileLogger.log("hotkey toggle desync: onStart while recording, redirecting to stop")
                         MainActor.assumeIsolated { self.hotkeyManager.resetActiveState() }
-                        Task { @MainActor in self.appState.stopRecording() }
+                        MainActor.assumeIsolated { self.appState.stopRecording() }
                         Task { await self.session.stopRecording() }
+                        return
+                    }
+
+                    // Block new recording while LLM/injection is still in progress.
+                    // The current session must finish (paste + history save) before a new one can start.
+                    if phase == .processing {
+                        NSLog("[Type4Me] >>> HOTKEY: onStart blocked – still processing")
+                        DebugFileLogger.log("hotkey onStart blocked: still processing")
+                        MainActor.assumeIsolated { self.hotkeyManager.resetActiveState() }
                         return
                     }
 
@@ -272,9 +288,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 },
                 onStop: { [weak self] in
                     guard let self else { return }
+
                     NSLog("[Type4Me] >>> HOTKEY: Record STOP")
                     DebugFileLogger.log("hotkey record stop")
-                    Task { @MainActor in self.appState.stopRecording() }
+                    MainActor.assumeIsolated { self.appState.stopRecording() }
                     Task { await self.session.stopRecording() }
                 }
             )
@@ -291,7 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let effectiveMode = availableModes.first(where: { $0.id == resolvedMode.id }) ?? resolvedMode
             NSLog("[Type4Me] >>> HOTKEY: Cross-mode stop → %@", effectiveMode.name)
             DebugFileLogger.log("hotkey cross-mode stop → \(effectiveMode.name)")
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self.appState.currentMode = effectiveMode
                 self.appState.stopRecording()
             }
@@ -302,18 +319,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // ESC abort: skip injection but let recognition/clipboard/history proceed.
+        // Returns true if the abort was actually handled (ESC should be swallowed).
         hotkeyManager.onESCAbort = { [weak self] in
-            guard let self else { return }
+            guard let self else { return false }
             let phase = appState.barPhase
             guard phase == .recording || phase == .processing || phase == .preparing else {
-                return  // Not in an active session, ignore ESC
+                return false  // Not in an active session, let ESC pass through
             }
             NSLog("[Type4Me] >>> HOTKEY: ESC abort injection (phase=%@)", String(describing: phase))
             DebugFileLogger.log("hotkey ESC abort injection phase=\(phase)")
+            MainActor.assumeIsolated { self.appState.stopRecording() }
             Task {
                 await self.session.abortInjection()
                 await self.session.stopRecording()
             }
+            return true
         }
 
         // Sync ESC abort enabled setting to HotkeyManager
@@ -330,12 +350,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func syncESCAbortSetting() {
-        // Default to true if not set (key doesn't exist)
-        if UserDefaults.standard.object(forKey: "tf_escAbortEnabled") == nil {
-            hotkeyManager.isESCAbortEnabled = true
-        } else {
-            hotkeyManager.isESCAbortEnabled = UserDefaults.standard.bool(forKey: "tf_escAbortEnabled")
-        }
+        hotkeyManager.isESCAbortEnabled = true
     }
 
     private var retryTimer: Timer?
@@ -508,6 +523,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "reload-vocabulary":
                 NSLog("[Type4Me] URL command: reload-vocabulary")
                 SenseVoiceServerManager.syncHotwordsAndRestart()
+            case "auth":
+                NSLog("[Type4Me] URL command: auth (no-op, code-based auth now)")
             default:
                 NSLog("[Type4Me] Unknown URL command: \(url)")
             }
@@ -599,9 +616,10 @@ struct MenuBarContent: View {
 
         Divider()
 
-        Button(L("设置向导...", "Setup Wizard...")) {
-            openWindow(id: "setup")
+        Button(L("历史记录...", "History...")) {
+            openSettingsWindow(id: "settings")
             NSApp.activate(ignoringOtherApps: true)
+            NotificationCenter.default.post(name: .navigateToHistory, object: nil)
         }
 
         Button(L("偏好设置...", "Preferences...")) {
@@ -643,7 +661,7 @@ struct MenuBarContent: View {
         switch appState.barPhase {
         case .preparing: return L("录制中", "Recording")
         case .recording: return L("录制中", "Recording")
-        case .processing: return appState.currentMode.processingLabel
+        case .processing: return appState.effectiveProcessingLabel
         case .done: return L("完成", "Done")
         case .error: return L("错误", "Error")
         case .hidden: return L("就绪", "Ready")
